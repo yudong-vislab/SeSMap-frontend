@@ -394,7 +394,7 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
 .lp-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: 1.6fr 1.2fr 1.6fr; /* Parameters / Paper / Chat */
+  grid-template-rows: 1.55fr 1.3fr 1.5fr; /* Parameters / Paper / Chat */
   gap: 6px;
   background: #f3f4f6;
   box-sizing: border-box;
