@@ -55,10 +55,10 @@ onMounted(() => nextTick(autoResize))
 
 <template>
   <div class="chat-dock">
-    <div class="dock-tools">
+    <!-- <div class="dock-tools">
       <button class="tool-btn" title="Upload File" @click="openFilePicker">📎</button>
       <input ref="fileInputRef" type="file" multiple class="hidden-input" @change="onPickFiles" />
-    </div>
+    </div> -->
 
     <div class="dock-editor">
       <textarea
