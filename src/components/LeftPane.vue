@@ -529,7 +529,7 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
 /* 文本域 */
 .cp-textarea{
   min-height: 90px;      /* 高度降低 */
-  font-size: 11px;
+  font-size: 9px;
   line-height: 1.4;
   padding: 6px 8px;
   border: 1px solid #e5e7eb;
