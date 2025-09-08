@@ -297,14 +297,14 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
 
       <div class="lp-card__body cp-stack">
         <!-- LLM -->
-        <div class="cp-block">
+        <!-- <div class="cp-block">
           <div class="cp-label-top">LLM</div>
           <select class="cp-input cp-select" v-model="selectedLLM">
             <option v-for="o in llmOptions" :key="o" :value="o">{{ o }}</option>
           </select>
-        </div>
+        </div> -->
 
-        <div class="cp-divider"></div>
+        <!-- <div class="cp-divider"></div> -->
 
         <!-- Global System Prompt -->
         <div class="cp-block">
@@ -339,7 +339,7 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
           </select>
         </div> -->
 
-        <div class="cp-divider"></div>
+        <!-- <div class="cp-divider"></div> -->
 
         <!-- Hex Radius Threshold -->
         <div class="cp-block">
