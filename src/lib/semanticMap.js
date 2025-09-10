@@ -47,7 +47,8 @@ const STYLE = {
   ROAD_OPACITY: 0.88,
   ROAD_DASH: null,
 
-  RIVER_COLOR: '#a6cee3',
+  RIVER_COLOR: '#e9c46b',
+  // RIVER_COLOR: '#a6cee3',
   RIVER_WIDTH: 1.2,
   RIVER_OPACITY: 0.88,
   RIVER_DASH: null,
@@ -237,59 +238,6 @@ export async function initSemanticMap({
     return d3.range(6).map(i => [radius * Math.cos(angle * i), radius * Math.sin(angle * i)])
       .concat([[radius, 0]]);
   };
-
-    // —— 统一键名 —— //
-  const keyHexColon = (panelIdx,q,r) => `${panelIdx}:${q},${r}`;   // 给右卡片/miniPathRenderer
-  const keyHexPipe  = (panelIdx,q,r) => `${panelIdx}|${q},${r}`;   // 你当前面板内 alphaByKey 可能用这个
-  const keyPanelCountry = (panelIdx,cid) => `${panelIdx}|${normalizeCountryId(cid)}`;
-
-  // —— 容忍 Map/对象 —— //
-  function pick(mapLike, key) {
-    if (!mapLike) return null;
-    const k1 = key, k2 = String(key);
-    if (mapLike instanceof Map) return mapLike.get(k1) ?? mapLike.get(k2) ?? null;
-    if (typeof mapLike === 'object') return (mapLike[k1] ?? mapLike[k2] ?? null);
-    return null;
-  }
-
-
-  function getCountryKeys(panelIdx, countryId) {
-    const m = App.countryKeysByPanel?.[panelIdx];
-    if (!m) return new Set();
-    return new Set(m.get(countryId) || []);
-  }
-
-  function collectCountryKeysAllPanels(countryId) {
-    const out = new Set();
-    (App.countryKeysByPanel || []).forEach((map, pIdx) => {
-      if (!map) return;
-      const set = map.get(countryId);
-      if (set && set.size) {
-        set.forEach(k => out.add(k)); // k 已是 "panelIdx|q,r"
-      }
-    });
-    return out;
-  }
-
-  function clearAltFocusForPanelOnNormalClick(panelIdx) {
-    let changed = false;
-
-    // 全局 Alt 聚焦关掉（不影响你已确认的颜色表）
-    if (App.focusCountryId) {
-      setCountryFocus(null, null);   // 会清 App.highlightedHexKeys
-      changed = true;
-    }
-
-    // 本面板若有本地聚焦也一并关掉
-    const local = App.panelFocusOverrides.get(panelIdx);
-    if (local && local.countryId) {
-      App.panelFocusOverrides.set(panelIdx, { countryId: null, mode: null });
-      changed = true;
-    }
-
-    if (changed) updateHexStyles();  // 让整国涂色立刻消失
-  }
-
 
   // —— 简易防抖 —— //
   function debounce(fn, wait = 240) {
@@ -625,14 +573,6 @@ export async function initSemanticMap({
       return { colorByCountry, colorByPanelCountry };
     }
 
-
-
-  // === 坐标/变换工具：把 axial(0,0) 精准放到容器中心 =================
-  function axialToXY(q, r, radius = App.config.hex.radius) {
-    // 平顶六边形（flat-top）轴坐标 → 像素
-    // x = 1.5R * q,  y = sqrt(3)R * (r + q/2)
-    return [1.5 * radius * q, Math.sqrt(3) * radius * (r + q / 2)];
-  }
 
   // 从当前已选节点集合（persistentHexKeys）推导出涉及到的整条线路，灌入 selectedRouteIds
   function seedSelectedRoutesFromPersistent() {
@@ -1181,8 +1121,6 @@ function hideHexTooltip() {
       return out; // Array<"panelIdx|q,r">
     }
 
-
-
     // —— 预览工具：根据当前模式，计算鼠标悬停点应该高亮的 key 集 —— //
     function computeHoverPreview(panelIdx, q, r, { withCtrl=false, withShift=false } = {}) {
       const ctrlLike   = !!withCtrl;
@@ -1482,9 +1420,8 @@ function hideHexTooltip() {
     });
     // ★ 集合变更后立即重画
     drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
-   
+  
   }
-
 
   /* =========================
    * DOM/子空间
@@ -2363,23 +2300,6 @@ function hideHexTooltip() {
     return out;
   }
 
-  function addFlightNeighbors(panelIdx, q, r) {
-    for (const link of App._lastLinks || []) {
-      if (link.type !== 'flight') continue;
-      const a = link.path?.[0];
-      const b = link.path?.[link.path.length - 1];
-      if (!a || !b) continue;
-
-      const aPanel = resolvePanelIdxForPathPoint(a, link, 0);
-      const bPanel = resolvePanelIdxForPathPoint(b, link, (link.path?.length || 1) - 1);
-      const isA = (a.q === q && a.r === r && aPanel === panelIdx);
-      const isB = (b.q === q && b.r === r && bPanel === panelIdx);
-
-      if (isA) App.neighborKeySet.add(`${bPanel}|${b.q},${b.r}`);
-      if (isB) App.neighborKeySet.add(`${aPanel}|${a.q},${a.r}`);
-    }
-  }
-
 function updateHexStyles() {
     App.subspaceSvgs.forEach((svg, panelIdx) => {
       const override = App.panelFocusOverrides.get(panelIdx);
@@ -2563,20 +2483,6 @@ function updateHexStyles() {
     }
     return star;  // Set<"panel|q,r">
   }
-
-
-  // 基于当前边集，返回 “以 (panelIdx,q,r) 为中心的一跳星选集合（含自身）”
-  function getStarKeys(panelIdx, q, r) {
-    const adj = buildUndirectedAdjacency();
-    const k = `${panelIdx}|${q},${r}`;
-    const star = new Set([k]);
-    const nbs = adj.get(k);
-    if (nbs && nbs.size) {
-      for (const nb of nbs) star.add(nb);
-    }
-    return star;
-  }
-
 
   function findEndpointMate(panelIdx, q, r) {
     const k = (p, q, r) => `${p}|${q},${r}`;
@@ -3591,7 +3497,6 @@ function exportMiniColorMaps() {
           def:    App.config?.background      || '#ffffff'
         };
       },
-
 
   };
 
