@@ -241,8 +241,35 @@ export async function initSemanticMap({
       .concat([[radius, 0]]);
   };
 
+  // === Only reset points (do NOT touch country boundaries/focus/colors) ===
+  function resetSubspacePoints(panelIdx) {
+    // panel-scoped removal from a Set of "panel|q,r" keys
+    const dropKeysOfPanel = (set) => {
+      if (!set || typeof set.forEach !== 'function') return;
+      const toDel = [];
+      set.forEach((k) => {
+        const s = String(k);
+        const p = s.split('|')[0];
+        if (p === panelIdx) toDel.push(k);
+      });
+      toDel.forEach(k => set.delete(k));
+    };
 
-   // === helpers for click payload (full multi-country data) ===
+    // Clear point-related transient states
+    App.hoveredHex = null;
+    App.flightHoverTarget = null;
+    dropKeysOfPanel(App.highlightedHexKeys);
+    dropKeysOfPanel(App.persistentHexKeys);
+    dropKeysOfPanel(App.excludedHexKeys);
+
+    // Do NOT clear country focus / colors / country layers here.
+    // Just refresh styles to reflect point reset.
+    if (typeof updateHexStyles === 'function') {
+      updateHexStyles();
+    }
+  }
+
+  // === helpers for click payload (full multi-country data) ===
   function ensureBucketFor(panelIdx, q, r, d) {
     const b = (typeof getBucket === 'function') ? getBucket(panelIdx, q, r) : null;
     if (b && Array.isArray(b.items)) return b;
@@ -267,37 +294,46 @@ export async function initSemanticMap({
     return out;
   }
   
-  function emitHexClick(panelIdx, q, r, d) {
-    try {
-      // 1) 统一拿整格 bucket（无 bucket 时包成单格 bucket）
-      const bucket = ensureBucketFor(panelIdx, q, r, d);
-      // 2) 按国家分组（若已有 _bucketCountrySlices 也可替换为它）
-      const groupsMap = bucketGroupsFor(panelIdx, q, r);
-      const groups = Array.from(groupsMap.entries()).map(([cid, g]) => ({
-        country_id: cid,
-        items: g.items,
-        msu_ids: g.msu_ids,
-        msu: (typeof resolveMSUs === 'function') ? resolveMSUs(g.msu_ids || []) : (g.msu_ids || [])
-      }));
-      // 3) 兼容字段（所有组的并集）
-      const all_msu_ids = groups.flatMap(x => x.msu_ids || []);
-      const all_msu = (typeof resolveMSUs === 'function') ? resolveMSUs(all_msu_ids) : all_msu_ids;
-      // 4) 抛给上层
-      if (typeof App.onHexClick === 'function') {
-        App.onHexClick({
-          panelIdx, q, r,
-          bucket: { q, r, countries: Array.from(bucket.countries || []), items: bucket.items || [] },
-          groups,            // ★ 每个国家一组（country_id / items / msu_ids / msu）
-          msu_ids: all_msu_ids, // 兼容字段：整格 MSU 并集
-          msu: all_msu          // 兼容字段：解析后的并集
-        });
-      }
-    } catch (e) {
-      console.warn('emitHexClick error:', e);
+function emitHexClick(panelIdx, q, r, d) {
+  try {
+    // 1) 统一拿整格 bucket（若没有就包成单格 bucket）
+    const bucket = ensureBucketFor(panelIdx, q, r, d);
+    // 2) 按国家分组
+    const groupsMap = bucketGroupsFor(panelIdx, q, r);
+    const groups = Array.from(groupsMap.entries()).map(([cid, g]) => ({
+      country_id: cid,
+      items: g.items,
+      msu_ids: g.msu_ids,
+      msu: (typeof resolveMSUs === 'function')
+            ? resolveMSUs(g.msu_ids || [])
+            : (g.msu_ids || [])
+    }));
+    // 3) 兼容字段（所有组的并集）
+    const all_msu_ids = groups.flatMap(x => x.msu_ids || []);
+    const all_msu = (typeof resolveMSUs === 'function') ? resolveMSUs(all_msu_ids) : all_msu_ids;
+
+    const payload = { panelIdx, q, r, bucket, groups, all_msu_ids, all_msu, raw: d };
+
+    // 优先走外部钩子
+    if (typeof App?.onHexClick === 'function') {
+      App.onHexClick(payload);
     }
+    // 同时抛一个 DOM 事件，方便外部监听
+    if (typeof window !== 'undefined' && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent('semanticmap:hexclick', { detail: payload }));
+    }
+  } catch (e) {
+    console.warn('emitHexClick error:', e);
   }
+}
 
-
+// === Helpers: fully reset a subspace back to pristine ===
+function clearCountryLayers(panelIdx) {
+  const svg = App?.subspaceSvgs?.[panelIdx];
+  if (!svg) return;
+  // 根据你的工程里国家图层 class 做一次尽量稳健的清理
+  svg.selectAll('.country-layer, .country-boundary, .country-fill, .country-stroke').remove();
+}
 
 // === Helper: ensure hatch pattern exists (optional overlay for conflicts) ===
 function ensureHatchPattern(panelIdx, svg, color) {
@@ -636,6 +672,14 @@ function renderBucketTooltipHTML(bucket) {
   }
 
   function setCountryFocus(countryId, mode = 'filled') {
+    // 切换聚焦国家 → 清除 release toggle 状态
+    if (typeof App !== 'undefined' && App._releaseToggleByPanel) {
+      // 找到当前面板 idx，这里假设传入的是全局焦点，可根据你的上下文选择具体 idx
+      // 若已有 panelIdx 参数或可获取当前 activePanelIdx，请替换掉 0
+      const panelIdx = 0;
+      App._releaseToggleByPanel.set(panelIdx, false);
+    }
+ 
     const normId = countryId ? normalizeCountryId(countryId) : null;
     App.focusCountryId = normId;
     App.focusMode = normId ? mode : null;
@@ -677,6 +721,32 @@ function renderBucketTooltipHTML(bucket) {
     const cid = normalizeCountryId(countryIdRaw);
     return new Set(m.get(cid) || []);
   }
+
+    // ★ 新增：面板内冲突区域 key 集合（countries.size > 1）
+  function getConflictKeysInPanel(panelIdx, countriesFilter) {
+    const out = new Set();
+    const buckets = App.hexBucketsByPanel?.[panelIdx];
+    if (!buckets) return out;
+    const filter = countriesFilter ? new Set(Array.from(countriesFilter).map(normalizeCountryId)) : null;
+    buckets.forEach((b, key) => {
+      if (!b || !b.countries || b.countries.size <= 1) return;
+      if (filter) {
+        // 与过滤国家有交集才纳入
+        let has = false;
+        b.countries.forEach(cid => { if (filter.has(normalizeCountryId(cid))) has = true; });
+        if (!has) return;
+      }
+      out.add(`${panelIdx}|${b.q},${b.r}`);
+    });
+    return out;
+  }
+
+  // ★ 新增：面板内某国家参与的“冲突区域” key 集合
+  function getConflictKeysForCountryInPanel(panelIdx, countryIdRaw) {
+    const cid = normalizeCountryId(countryIdRaw);
+    return getConflictKeysInPanel(panelIdx, new Set([cid]));
+  }
+
 
   // ★ 新增：跨所有面板，取同一国家（规范 id 后）的全部 hex key
   function getCountryKeysAllPanels(countryIdRaw) {
@@ -1001,6 +1071,62 @@ App.panelCountryColors = new Map();
 App._pendingColorEdit = null; 
 // { panelIdx, countryId, color, keys:Set<"p|q,r">, alphaByKey:Map }
 
+App.panelConflictColors = new Map();
+// 临时预览（和国家改色的 pending 并存）
+App._pendingConflictEdit = null;
+// 判断某格是否冲突（countries.size > 1）
+function isConflictHex(panelIdx, q, r) {
+  try {
+    const b = getBucket(panelIdx, q, r);
+    return !!(b && b.countries && b.countries.size > 1);
+  } catch { return false; }
+}
+
+// 冲突区：构建透明度渐变（整面板的冲突 hex）
+function buildConflictAlphaRampFor(panelIdx) {
+  const keys = getConflictKeysInPanel(panelIdx); // 已有函数
+  const arr = Array.from(keys).map(k => {
+    const [pStr, qr] = String(k).split('|');
+    const [qs, rs] = qr.split(',');
+    const p = +pStr, q = +qs, r = +rs;
+    const hex = App.hexMapsByPanel[p]?.get(`${q},${r}`);
+    return { k, x: hex?.x ?? 0, y: hex?.y ?? 0 };
+  });
+  arr.sort((a,b) => (a.y - b.y) || (a.x - b.x));
+  const n = Math.max(1, arr.length);
+  const a0 = 0.65, a1 = 1.0;
+  const alphaByKey = new Map();
+  arr.forEach((it, i) => {
+    const t = n === 1 ? 1 : i / (n - 1);
+    const alpha = a0 + (a1 - a0) * t;
+    alphaByKey.set(it.k, alpha);
+  });
+  return { keys: new Set(arr.map(d => d.k)), alphaByKey };
+}
+
+// 写入/读取 冲突色
+function setConflictColorOverride(panelIdx, color, alphaByKey) {
+  let alphaMap = new Map();
+  if (alphaByKey instanceof Map) {
+    alphaMap = new Map(
+      Array.from(alphaByKey.entries()).map(([k, v]) => {
+        const kk = (typeof k === 'string') ? (k.includes('|') ? k : k.replace(':','|')) : String(k);
+        return [kk, v];
+      })
+    );
+  } else if (alphaByKey && typeof alphaByKey === 'object') {
+    for (const [k, v] of Object.entries(alphaByKey)) {
+      const kk = k.includes('|') ? k : k.replace(':','|');
+      alphaMap.set(kk, v);
+    }
+  }
+  App.panelConflictColors.set(panelIdx, { color, alphaByKey: alphaMap });
+}
+
+function getConflictColorOverride(panelIdx) {
+  return App.panelConflictColors?.get(panelIdx) || null;
+}
+
 // —— 统一的内部归一化 —— //
 function _normCid(cid) {
   try {
@@ -1116,71 +1242,75 @@ function ensureColorMenu() {
   };
 
   // 同步：色盘 <-> 文本
+  // —— 输入同步：色盘 <-> 文本，并同时更新两个 pending —— 
   menu.querySelector('#alt-color-input').addEventListener('input', () => {
-    const { inp, hex } = pick();
+    const inp = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-input'));
+    const hex = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-hex'));
     hex.value = inp.value.toUpperCase();
-    // 预览
-    if (App._pendingColorEdit) {
-      App._pendingColorEdit.color = inp.value;
-      debouncedPreview();          // ← 用防抖替代即时预览
-    }
+
+    if (App._pendingColorEdit)    App._pendingColorEdit.color = inp.value;
+    if (App._pendingConflictEdit) App._pendingConflictEdit.color = inp.value;
+    debouncedPreview();
   });
+
   menu.querySelector('#alt-color-hex').addEventListener('input', () => {
-    const { inp, hex } = pick();
+    const inp = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-input'));
+    const hex = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-hex'));
     const v = hex.value.trim();
     if (/^#([0-9a-f]{6})$/i.test(v)) {
       inp.value = v;
-      if (App._pendingColorEdit) {
-        App._pendingColorEdit.color = v;
-        debouncedPreview();        // ← 防抖
-      }
+      if (App._pendingColorEdit)    App._pendingColorEdit.color = v;
+      if (App._pendingConflictEdit) App._pendingConflictEdit.color = v;
+      debouncedPreview();
     }
   });
 
-  // 确认 / 取消
+  // —— 确认：同时落盘冲突颜色 & 国家颜色 —— 
   menu.querySelector('#alt-color-confirm').addEventListener('click', () => {
-    if (!App._pendingColorEdit) return;
-
-    // 兜底取最新的颜色（文本框 > 取色器 > pending）
     const colorInp = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-input'));
     const colorHex = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-hex'));
-    let chosen = (colorHex?.value || colorInp?.value || App._pendingColorEdit.color || '').trim();
-    if (!/^#([0-9a-f]{6})$/i.test(chosen)) {
-      // 非法则直接不要存，避免污染
-      chosen = null;
+    let chosen = (colorHex?.value || colorInp?.value || '').trim();
+    if (!/^#([0-9a-f]{6})$/i.test(chosen)) chosen = null;
+
+    const pendC = App._pendingConflictEdit;
+    const pendN = App._pendingColorEdit;
+
+    if (pendC && chosen) {
+      setConflictColorOverride(pendC.panelIdx, chosen, pendC.alphaByKey);
+    }
+    if (pendN && chosen) {
+      setCountryColorOverride(pendN.panelIdx, pendN.countryId, chosen, pendN.alphaByKey);
     }
 
-    const { panelIdx, countryId, alphaByKey } = App._pendingColorEdit;
-    if (chosen) {
-      setCountryColorOverride(panelIdx, countryId, chosen, alphaByKey);
-    }
-
+    App._pendingConflictEdit = null;
     App._pendingColorEdit = null;
     hideColorMenu();
     updateHexStyles();
   });
 
-
+  // —— 取消 / 点击外部：同时丢弃两个 pending —— 
   menu.querySelector('#alt-color-cancel').addEventListener('click', () => {
-    App._pendingColorEdit = null; // 丢弃预览
+    App._pendingConflictEdit = null;
+    App._pendingColorEdit = null;
     hideColorMenu();
     updateHexStyles();
   });
 
-  // 点击菜单外关闭
   document.addEventListener('click', (e) => {
     if (menu.style.display === 'none') return;
     if (!menu.contains(e.target)) {
+      App._pendingConflictEdit = null;
       App._pendingColorEdit = null;
       hideColorMenu();
       updateHexStyles();
     }
   });
 
-  // 防抖的预览更新：仅在有 pending 编辑时才预览
+  // —— 预览刷新：任一 pending 存在就预览 —— 
   const debouncedPreview = debounce(() => {
-    if (App._pendingColorEdit) updateHexStyles();
-  }, 160); // 可调：120~200ms
+    if (App._pendingColorEdit || App._pendingConflictEdit) updateHexStyles();
+  }, 160);
+
 
   return menu;
 }
@@ -1434,21 +1564,37 @@ function hideHexTooltip() {
 
   function computeHoverOrCountryPreview(panelIdx, q, r, { withCtrl=false, withShift=false, withAlt=false } = {}) {
     if (withAlt) {
-      const hex = App.hexMapsByPanel[panelIdx]?.get(`${q},${r}`);
-      const cid = hex?.country_id ? normalizeCountryId(hex.country_id) : null;
-      if (!cid) return new Set();
+      // 判定当前格是否冲突：同一 (q,r) 存在多个国家
+      const bucket = getBucket(panelIdx, q, r);
+      const isConflict = !!(bucket && bucket.countries && bucket.countries.size > 1);
 
-      // 复制面板：只在本面板预览
-      if (App.altIsolatedPanels.has(panelIdx)) {
-        return getCountryKeysInPanel(panelIdx, cid);
+      if (isConflict) {
+        // 仅显示“当前子空间下的冲突区域”
+        // 为了语义聚焦，仅取与鼠标所在格同一冲突国家集合有交集的冲突格
+        const countriesHere = new Set(bucket.countries || []);
+        return getConflictKeysInPanel(panelIdx, countriesHere);
+      } else {
+        // 非冲突格：按国家版图显示，并把该国家参与的冲突格也纳入当前子空间预览
+        const hex = App.hexMapsByPanel[panelIdx]?.get(`${q},${r}`);
+        const cid = hex?.country_id ? normalizeCountryId(hex.country_id) : null;
+        if (!cid) return new Set();
+
+        // 复制面板：仅本面板预览（国家格  该国家的冲突格）
+        if (App.altIsolatedPanels.has(panelIdx)) {
+          const keys = getCountryKeysInPanel(panelIdx, cid);
+          const conflicts = getConflictKeysForCountryInPanel(panelIdx, cid);
+          conflicts.forEach(k => keys.add(k));
+          return keys;
+        }
+        // 跨面板：沿用原跨面板国家预览，但当前子空间下补充冲突格保证可见
+        const keys = getCountryKeysAllPanels(cid);
+        getConflictKeysForCountryInPanel(panelIdx, cid).forEach(k => keys.add(k));
+        return keys;
       }
-      // 其它面板：保持原逻辑，跨面板
-      return getCountryKeysAllPanels(cid);
     }
 
     return ModeUI.computeHoverPreview(panelIdx, q, r, { withCtrl, withShift });
   }
-
 
   // —— Mode UI：按钮状态（绿色=active，黄色=armed），无 HUD/Chip —— //
   const ModeUI = (() => {
@@ -2107,14 +2253,6 @@ function hideHexTooltip() {
     // 容器组
     let container = svg.select('g');
     if (container.empty()) container = svg.append('g');
-
-    console.log('=== DEBUG space.hexList ===', {
-      panelIdx,
-      hexListLength: space.hexList?.length || 0,
-      firstHex: space.hexList?.[0],
-      hasSummary: space.hexList?.[0]?.summary !== undefined,
-      summaryValue: space.hexList?.[0]?.summary
-    });
     // 数据坐标（平顶六边形）
     const rawHexList = (space.hexList || []).map(h => {
       const x = (3 / 4) * 2 * hexRadius * h.q;
@@ -2295,6 +2433,7 @@ function hideHexTooltip() {
           })
           
           .on('click', (event, d) => {
+            App._releaseToggleByPanel?.set?.(panelIdx, false);
             event.preventDefault();
             event.stopPropagation();
             // 阻断双击序列里的单击
@@ -2306,104 +2445,48 @@ function hideHexTooltip() {
             App._clickTimer = setTimeout(() => {
               handleSingleClick(panelIdx, d.q, d.r, withCtrl, withShift);
             }, STYLE.CLICK_DELAY);
-            // ★ FIX: 点击时把“该 hex 的全部国家数据”都抛给上层（含分组）
-             if (typeof App.onHexClick === 'function') {
-               const bucket = getBucket(panelIdx, d.q, d.r);
-               // 兜底：若没有 bucket（单条），也包装成 bucket 形态
-               const one = App.hexMapsByPanel?.[panelIdx]?.get(`${d.q},${d.r}`) || d;
-               const _bucket = (bucket && Array.isArray(bucket.items)) ? bucket : {
-                 panelIdx, q: d.q, r: d.r,
-                 items: [one], countries: new Set(one?.country_id ? [normalizeCountryId(one.country_id)] : []),
-                 msuCount: Array.isArray(one?.msu_ids) ? one.msu_ids.length : 0
-               };
- 
-               // 按国家分组（若你已有 _bucketCountrySlices，可直接用）
-               const groupsMap = (typeof _bucketCountrySlices === 'function')
-                 ? _bucketCountrySlices(panelIdx, d.q, d.r)
-                 : (function makeGroups(b){
-                     const m = new Map();
-                     (b.items || []).forEach(it => {
-                       const cid = normalizeCountryId(it?.country_id || '—');
-                       if (!m.has(cid)) m.set(cid, { country_id: cid, items: [], msu_ids: [] });
-                       const g = m.get(cid);
-                       g.items.push(it);
-                       if (Array.isArray(it?.msu_ids)) g.msu_ids.push(...it.msu_ids);
-                     });
-                     return m;
-                   })(_bucket);
- 
-               const groups = Array.from(groupsMap.entries()).map(([cid, g]) => ({
-                 country_id: cid,
-                 items: g.items,
-                 msu_ids: g.msu_ids,
-                 msu: resolveMSUs(g.msu_ids || [])
-               }));
-
-               console.log('Hex click groups:', groups);
- 
-               // 兼容字段：合并整格的 msu_ids / msu（方便旧的接收方继续工作）
-               const all_msu_ids = groups.flatMap(g => g.msu_ids || []);
-               const all_msu = resolveMSUs(all_msu_ids);
- 
-               try {
-                 App.onHexClick({
-                   panelIdx,
-                   q: d.q, r: d.r,
-                   // 保留少量向后兼容字段（若接收方还读这些也不至于报错）
-                   modality: one?.modality || '',
-                   country_id: one?.country_id || null,
-                   label: one?.label || `${d.q},${d.r}`,
-                   // — 新增：完整数据 —
-                   bucket: {
-                     q: d.q, r: d.r,
-                     countries: Array.from(_bucket.countries || []),
-                     items: _bucket.items || []
-                   },
-                   groups,            // [{ country_id, items, msu_ids, msu }]
-                   msu_ids: all_msu_ids,
-                   msu: all_msu
-                 });
-               } catch (e) { console.warn(e); }
-             }
-
+            // 统一：点击时抛出“该 hex 的完整（含多国）数据”
+             emitHexClick(panelIdx, d.q, d.r, d);
 
           }).on('dblclick', (event, d) => {
             event.preventDefault(); event.stopPropagation();
             if (App._clickTimer) { clearTimeout(App._clickTimer); App._clickTimer = null; }
             handleDoubleClick(panelIdx, d.q, d.r, event);
           }).on('contextmenu', (event, d) => {
-              event.preventDefault(); // 屏蔽系统右键
-              // 仅在 Alt 聚焦语义下启用右键菜单（并且这个 hex 有 country_id）
-              const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${d.q},${d.r}`) || d;
-              const rawCid = hex?.country_id || null;
-              if (!App.modKeys.alt || !rawCid) return;
+              if (!App.modKeys.alt) return;
+              event.preventDefault();
 
-              const cid = normalizeCountryId(rawCid);
+              const panelIdx = d.panelIdx ?? d.panel_index ?? 0;
+              const q = d.q, r = d.r;
+              const isConflict = isConflictHex(panelIdx, q, r);
 
-              // 决定改“本面板”还是“跨面板”
-              // 按你的语义：如果这个面板在 altIsolatedPanels 里 → 只作用于本面板；
-              // 否则我们也只对“当前面板”改色（避免误改其它面板）。
-              const targetPanel = panelIdx;
+              if (isConflict) {
+                const { keys, alphaByKey } = buildConflictAlphaRampFor(panelIdx);
+                App._pendingConflictEdit = {
+                  panelIdx,
+                  color: getConflictColorOverride(panelIdx)?.color || '#FFCC00',
+                  keys,
+                  alphaByKey
+                };
+                App._pendingColorEdit = null;
+              } else {
+                const raw = d.country_id || null;
+                if (!raw) return;
+                const countryId = normalizeCountryId(raw);
+                const { keys, alphaByKey } = buildAlphaRampFor(panelIdx, countryId); // 你现有的方法
+                App._pendingColorEdit = {
+                  panelIdx,
+                  countryId,
+                  color: getCountryColorOverride(panelIdx, countryId)?.color || '#A9D08D',
+                  keys,
+                  alphaByKey
+                };
+                App._pendingConflictEdit = null;
+              }
 
-              // 准备 ramp（基于该面板内的该国全部 hex）
-              const { keys, alphaByKey } = buildAlphaRampFor(targetPanel, cid);
-
-              // 选择初始色：已有覆盖色 > 默认聚焦色
-              const curOv = getCountryColorOverride(targetPanel, cid);
-              const initColor = curOv?.color || STYLE.FOCUS_COUNTRY_FILL || '#FCFCFC';
-
-              // 保存为“临时预览”
-              App._pendingColorEdit = {
-                panelIdx: targetPanel,
-                countryId: cid,
-                color: initColor,
-                keys,
-                alphaByKey
-              };
-
-              // 打开菜单到鼠标处
-              showColorMenu(event.clientX, event.clientY, initColor);
-              updateHexStyles(); // 让预览立即生效
+              showColorMenu(event.clientX, event.clientY,
+                (App._pendingConflictEdit?.color || App._pendingColorEdit?.color || '#A9D08D')
+              );
             });
 
 
@@ -2784,8 +2867,8 @@ const gSel  = d3.select(this);
 
         // —— 已确认颜色覆盖（面板级按国家） —— //
         const ov = thisCid ? getCountryColorOverride(panelIdx, thisCid) : null;
-        const confirmedColor = ov ? ov.color : null;
-        const confirmedAlpha = ov ? (ov.alphaByKey.get(key) ?? null) : null;
+        let confirmedColor = ov ? ov.color : null;
+        let confirmedAlpha = ov ? (ov.alphaByKey.get(key) ?? null) : null;
 
         // —— 临时预览（仅 Alt 焦点的 pending） —— //
         let previewColor = null;
@@ -2797,6 +2880,65 @@ const gSel  = d3.select(this);
             previewAlpha = p.alphaByKey.get(key) ?? null;
           }
         }
+
+        // —— 冲突优先：当 hex 是冲突时，禁用“国家覆盖色”，启用“冲突覆盖色/预览” —— //
+        const isConflict = isConflictHex(panelIdx, d.q, d.r);
+        let conflictConfirmedColor = null;
+        let conflictConfirmedAlpha = null;
+        let conflictPreviewColor   = null;
+        let conflictPreviewAlpha   = null;
+
+        if (isConflict) {
+          // 1) 读取已确认的冲突覆盖
+          const cov = getConflictColorOverride(panelIdx);
+          if (cov) {
+            conflictConfirmedColor = cov.color || null;
+            conflictConfirmedAlpha = cov.alphaByKey?.get?.(key) ?? null;
+          }
+          // 2) 读取临时预览（颜色菜单打开时）
+          if (App._pendingConflictEdit && App._pendingConflictEdit.panelIdx === panelIdx) {
+            const p = App._pendingConflictEdit;
+            if (p.keys.has(key)) {
+              conflictPreviewColor = p.color;
+              conflictPreviewAlpha = p.alphaByKey.get(key) ?? null;
+            }
+          }
+
+          // 3) 冲突时，强制清空“国家覆盖”的颜色与 alpha，让后续逻辑只看冲突覆盖
+          previewColor = null;
+          previewAlpha = null;
+          // confirmed 来自国家覆盖的也清空
+          // 注：这里重用变量名，保持后面 useOverrideColorNow 统一判断
+          if (conflictPreviewColor || conflictConfirmedColor) {
+            previewColor = conflictPreviewColor;
+            previewAlpha = conflictPreviewAlpha;
+            // 用一个占位把 alpha 传下去
+            var _confAlpha = (conflictPreviewAlpha != null) ? conflictPreviewAlpha : conflictConfirmedAlpha;
+            // 用 confirmedColor 承载“已确认的冲突色”（若无预览）
+            if (!previewColor) {
+              // 没有预览时，通过 confirmedColor 传递
+              var _dummy = conflictConfirmedColor;
+              // 使用闭包变量名不冲突的写法
+              // 覆盖至外层变量
+              confirmedColor = conflictConfirmedColor;
+              confirmedAlpha = _confAlpha;
+
+            } else {
+              // 有预览时，confirmedColor 为空，previewColor 生效
+              confirmedColor = null;
+              confirmedAlpha = _confAlpha;
+            
+            }
+          } else {
+            // 没有冲突覆盖：保持 confirmed/preview 为空，让后续走“基础底色”(灰)
+            confirmedColor = null;
+            previewColor = null;
+            confirmedAlpha = null;
+            previewAlpha = null;
+            
+          }
+        }
+
 
         // —— 交互态 —— //
         const isSelected    = App.persistentHexKeys.has(key);
@@ -3164,29 +3306,40 @@ const gSel  = d3.select(this);
     const ctrlLike = !!withCtrl;
     const armed = isConnectArmedNow(withCtrl, withShift); // 键盘(Ctrl+Shift) 或 按钮黄灯
     const routeMode = isRouteMode(ctrlLike);              // 键盘(Ctrl/⌘) 或 按钮 Route 绿灯
-
-    // ★★★ Alt：国家聚焦/切换
-    // ★ Alt：国家聚焦（支持面板隔离）
+  
+    // ★★★ Alt：冲突 or 国家
     if (App.modKeys.alt) {
+      // 先看是否点在“冲突格”
+      const conflict = isConflictHex(panelIdx, q, r);
+      if (conflict) {
+        // 1) 选中整块冲突区
+        const { keys } = buildConflictAlphaRampFor(panelIdx);
+        // 清掉旧选集，换成冲突块（也可按需与旧选集合并）
+        App.persistentHexKeys.clear();
+        keys.forEach(k => App.persistentHexKeys.add(k));
+        App.selectedHex = { panelIdx, q, r };
+
+        // 2) 不改变国家聚焦；只刷新样式（高亮与透明度随 ramp）
+        updateHexStyles();
+        publishToStepAnalysis();
+        return;
+      }
+
+      // —— 否则：按“国家聚焦/切换”的旧逻辑 ——
       const hex = App.hexMapsByPanel[panelIdx]?.get(`${q},${r}`);
       const raw = hex?.country_id || null;
-      const isolated = App.altIsolatedPanels.has(panelIdx); // ← 是否隔离面板
-
+      const isolated = App.altIsolatedPanels.has(panelIdx);
       if (!raw) {
-        // 点在无国家处：清聚焦
         if (isolated) {
           App.panelFocusOverrides.set(panelIdx, { countryId: null, mode: null });
         } else {
-          setCountryFocus(null, null); // 你已有的全局函数
+          setCountryFocus(null, null);
         }
         updateHexStyles();
         return;
       }
-
       const cid = normalizeCountryId(raw);
-
       if (isolated) {
-        // ★ 面板级：只切换当前面板的 focus
         const cur = App.panelFocusOverrides.get(panelIdx);
         if (!cur || cur.countryId !== cid) {
           App.panelFocusOverrides.set(panelIdx, { countryId: cid, mode: 'filled' });
@@ -3195,7 +3348,6 @@ const gSel  = d3.select(this);
           App.panelFocusOverrides.set(panelIdx, { countryId: cid, mode: next });
         }
       } else {
-        // 原行为：全局联动
         if (!App.focusCountryId) {
           setCountryFocus(cid, 'filled');
         } else if (App.focusCountryId === cid) {
@@ -3204,10 +3356,10 @@ const gSel  = d3.select(this);
           setCountryFocus(cid, 'filled');
         }
       }
-
-      updateHexStyles(); // 关键：让边框与填充同步
+      updateHexStyles();
       return;
     }
+
 
     // ★★★ 非 Alt 点击：先把“Alt 整国着色”关掉（仅关视觉聚焦，不清你的颜色记录）
     // clearAltFocusForPanelOnNormalClick(panelIdx);
@@ -3702,55 +3854,37 @@ function observePanelResize() {
   }
 
 function releaseSubspaceSelections(panelIdx) {
-  // 1) 清掉本面板的节点选择/预览/排除
+  App._releaseToggleByPanel = App._releaseToggleByPanel || new Map();
+  if (App._releaseToggleByPanel.get(panelIdx)) {
+    // 第二次点击 → 仅重置当前子空间的点，不清国家边界/聚焦
+    resetSubspacePoints(panelIdx);
+    App._releaseToggleByPanel.set(panelIdx, false);
+    return;
+  }
+  // 第一次点击 → 执行释放效果
+  App._releaseToggleByPanel.set(panelIdx, true);
+
   const dropKeysOfPanel = (set) => {
-    for (const k of Array.from(set)) {
-      const [p] = k.split('|');
-      if (+p === panelIdx) set.delete(k);
-    }
+    if (!set || typeof set.forEach !== 'function') return;
+    const toDel = [];
+    set.forEach((k) => {
+      const s = String(k);
+      const p = s.split('|')[0];
+      if (p === panelIdx) toDel.push(k);
+    });
+    toDel.forEach(k => set.delete(k));
   };
   dropKeysOfPanel(App.persistentHexKeys);
   dropKeysOfPanel(App.highlightedHexKeys);
   dropKeysOfPanel(App.excludedHexKeys);
+  App.hoveredHex = null;
+  App.flightHoverTarget = null;
 
-  // 如果当前“悬停点/起点/临时目标”在本面板，也一并清理
-  if (App.hoveredHex?.panelIdx === panelIdx) App.hoveredHex = null;
-  if (App.flightStart?.panelIdx === panelIdx) App.flightStart = null;
-  if (App.flightHoverTarget?.panelIdx === panelIdx) App.flightHoverTarget = null;
-  if (App.selectedHex?.panelIdx === panelIdx) App.selectedHex = null;
-
-  // 2) 若存在“整条线路选择”，把这条线路中属于本面板的点全部标记为排除，
-  (App._lastLinks || []).forEach(link => {
-    if (!isSelectableRoute(link)) return;
-    const lk = linkKey(link);
-    if (!App.selectedRouteIds.has(lk)) return;
-    const path = Array.isArray(link.path) ? link.path : [];
-    for (let i = 0; i < path.length; i++) {
-      const pIdx = resolvePanelIdxForPathPoint(path[i], link, i);
-      if (pIdx === panelIdx) {
-        App.excludedHexKeys.add(`${panelIdx}|${path[i].q},${path[i].r}`);
-      }
-    }
-  });
-
-  // 3) 清掉本面板的 Alt 聚焦（不影响其它面板，也不影响全局）
-  App.panelFocusOverrides.set(panelIdx, { countryId: null, mode: null });
-
-  // 3.1) 清掉本面板的国家颜色覆盖
-  if (App.panelCountryColors?.has(panelIdx)) {
-    App.panelCountryColors.delete(panelIdx);
-  }
-
-  // 3.2) 清掉本面板的 Alt 隔离（如果有）
-  App.altIsolatedPanels.delete(panelIdx);
-
-  // 4) 重绘
   recomputePersistentFromRoutes();
-  drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
+  drawOverlayLinesFromLinks(App.selectedRouteIds.map(id => App.linksById.get(id)));
   updateHexStyles();
   publishToStepAnalysis();
 }
-
 
 function _duplicateSubspaceByIndex(srcIdx) {
   if (!App.currentData?.subspaces?.[srcIdx]) return;
