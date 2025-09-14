@@ -827,16 +827,59 @@ function renderBucketTooltipHTML(bucket) {
     }
 
     const normalizeCountryId = (cid) => App.countryIdAlias?.get?.(cid) || cid;
-    return { colorByCountry, colorByPanelCountry, alphaByNode, normalizeCountryId };
+
+    // === 追加：边框样式映射（把 "p|q,r" 转 "p:q,r"） ===
+    const borderColorByNode = {};
+    const borderWidthByNode = {};
+    if (App && App.borderCacheByHex) {
+      const put = (k, v) => {
+        const colonKey = String(k).replace('|', ':');
+        if (v && v.stroke) borderColorByNode[colonKey] = v.stroke;
+        if (v && Number.isFinite(v.strokeW)) borderWidthByNode[colonKey] = v.strokeW;
+      };
+      if (App.borderCacheByHex instanceof Map) {
+        App.borderCacheByHex.forEach((v, k) => put(k, v));
+      } else if (typeof App.borderCacheByHex === 'object') {
+        Object.entries(App.borderCacheByHex).forEach(([k, v]) => put(k, v));
+      }
+    }
+
+    // === 追加：冲突色的逐点覆盖（优先级最高） ===
+    const fillByNode = {};
+    if (App && App.panelConflictColors instanceof Map) {
+      App.panelConflictColors.forEach((rec, panelIdx) => {
+        const color = rec?.color;
+        const alphaByKey = rec?.alphaByKey;
+        if (!color || !(alphaByKey instanceof Map)) return;
+        alphaByKey.forEach((_, k) => {
+          const colonKey = String(k).replace('|', ':'); // "p:q,r"
+          // 只要在冲突 alpha 图里的点，一律用冲突统一色
+          fillByNode[colonKey] = color;
+        });
+      });
+    }
+
+    // —— 原有返回，补充 3 张表 —— 
+    return { colorByCountry, colorByPanelCountry, alphaByNode, normalizeCountryId,
+            borderColorByNode, borderWidthByNode, fillByNode };
+
   }
 
-
+  // —— 颜色/透明度/边框/逐点填充 的右侧快照 ——
+  // 注意：这是在 semanticMap.js 里替换 _buildColorMapsSnapshot 的完整实现
   function _buildColorMapsSnapshot() {
     const colorByCountry = {};
     const colorByPanelCountry = {};
-    const alphaByNode = {}; // ★ 新增
+    const alphaByNode = {}; // "panelIdx:q,r" -> 0..1
 
-    // 颜色：保持你原有逻辑
+    const _keyPipeToColon = (k) => {
+      if (typeof k !== 'string') return String(k);
+      const i = k.indexOf('|');
+      return i >= 0 ? `${k.slice(0,i)}:${k.slice(i+1)}` : k;
+    };
+    const normalizeCountryId = (cid) => App.countryIdAlias?.get?.(cid) || cid;
+
+    // 1) 颜色（保持你原逻辑）
     if (App && App.panelCountryColors instanceof Map) {
       App.panelCountryColors.forEach((m, panelIdx) => {
         if (!(m instanceof Map)) return;
@@ -847,8 +890,6 @@ function renderBucketTooltipHTML(bucket) {
             colorByPanelCountry[`${panelIdx}|${cid}`] = hex;
             if (!(cid in colorByCountry)) colorByCountry[cid] = hex;
           }
-
-          // 透明度优先来源：覆盖记录里的 alphaByKey
           const abk = rec?.alphaByKey;
           if (abk instanceof Map) {
             abk.forEach((a, k) => {
@@ -865,7 +906,7 @@ function renderBucketTooltipHTML(bucket) {
       });
     }
 
-    // 透明度次级来源：渲染缓存（updateHexStyles 写入的最终透明度）
+    // 2) 透明度兜底：来自渲染缓存（updateHexStyles 写入）
     if (App && App.alphaCacheByHex) {
       if (App.alphaCacheByHex instanceof Map) {
         App.alphaCacheByHex.forEach((a, k) => {
@@ -884,8 +925,40 @@ function renderBucketTooltipHTML(bucket) {
       }
     }
 
-    return { colorByCountry, colorByPanelCountry, alphaByNode }; // ★ 返回多一个
+    // 3) 边框样式：来自 App.borderCacheByHex（updateHexStyles 写入）
+    const borderColorByNode = {};
+    const borderWidthByNode = {};
+    if (App && App.borderCacheByHex) {
+      const put = (k, v) => {
+        const keyColon = _keyPipeToColon(k);
+        if (v && v.stroke) borderColorByNode[keyColon] = v.stroke;
+        if (v && Number.isFinite(v.strokeW)) borderWidthByNode[keyColon] = v.strokeW;
+      };
+      if (App.borderCacheByHex instanceof Map) {
+        App.borderCacheByHex.forEach((v, k) => put(k, v));
+      } else if (typeof App.borderCacheByHex === 'object') {
+        Object.entries(App.borderCacheByHex).forEach(([k, v]) => put(k, v));
+      }
+    }
+
+    // 4) 逐点填充（Alt 冲突色）：来自 App.panelConflictColors
+    const fillByNode = {};
+    if (App && App.panelConflictColors instanceof Map) {
+      App.panelConflictColors.forEach((rec /*, panelIdx */) => {
+        const color = rec?.color;
+        const alphaByKey = rec?.alphaByKey;
+        if (!color || !(alphaByKey instanceof Map)) return;
+        alphaByKey.forEach((_, k) => {
+          const keyColon = _keyPipeToColon(k);
+          fillByNode[keyColon] = color; // 只要在冲突 alpha 表里，就按冲突统一色涂满
+        });
+      });
+    }
+
+    // 统一返回
+    return { colorByCountry, colorByPanelCountry, alphaByNode, borderColorByNode, borderWidthByNode, fillByNode };
   }
+
 
     function degradeFocusToOutlineFor(panelIdx) {
       // 面板级优先：如果该面板有本地聚焦，改成 outline
@@ -2836,7 +2909,7 @@ function hideHexTooltip() {
     return out;
   }
 
-function updateHexStyles() {
+function updateHexStyles() {  
     App.subspaceSvgs.forEach((svg, panelIdx) => {
       const override = App.panelFocusOverrides.get(panelIdx);
       const focusCid  = override && override.countryId ? normalizeCountryId(override.countryId)
@@ -2847,11 +2920,18 @@ function updateHexStyles() {
         
         const core = d3.select(this).select('path.hex-core');
         if (!core.empty()) core.attr('fill', computeHexBaseFill(panelIdx, d.q, d.r, d.modality));
-const gSel  = d3.select(this);
+        const gSel  = d3.select(this);
         const path  = gSel.select('path');
         const hatch = gSel.select('path.hex-hatch');
         const key   = `${panelIdx}|${d.q},${d.r}`;
         const baseFill = getHexFillColor(d);
+
+        // === 记录最终边框样式到缓存（供右端使用） ===
+        const stroke  = path.attr('stroke') || (App?.config?.hex?.borderColor) || '#FFFFFF';
+        const strokeW = Number(path.attr('stroke-width')) || (App?.config?.hex?.borderWidth) || 1;
+        if (!App.borderCacheByHex) App.borderCacheByHex = new Map();
+        App.borderCacheByHex.set(key, { stroke, strokeW });
+
 
         // —— 国家与 Alt 焦点 —— //
         const thisCid = d.country_id ? normalizeCountryId(d.country_id) : null;

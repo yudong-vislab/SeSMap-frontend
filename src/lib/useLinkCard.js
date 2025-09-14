@@ -38,9 +38,13 @@ function pick(mapLike, key) {
 /** 节点着色：先 panel+country 覆盖 → 再全局 country → 最后 modality 回退 */
 function resolveNodeColor(
   n,
-  { colorByCountry, colorByPanelCountry, normalizeCountryId = (x)=>x } = {}
+  { colorByCountry, colorByPanelCountry, normalizeCountryId = (x)=>x, fillByNode = null } = {}
 ) {
   if (!n) return STYLE.COLOR_DEFAULT;
+  // ★ 优先：逐节点覆盖（Alt 冲突上色）
+  const nodeKey = `${n.panelIdx}:${n.q},${n.r}`;
+  const nodeFill = pick(fillByNode, nodeKey);
+  if (nodeFill) return nodeFill;
   const cidRaw = n.country_id;
   const cid = (cidRaw == null) ? null : normalizeCountryId(cidRaw);
 
@@ -106,7 +110,10 @@ export function mountMiniLink(
     colorByPanelCountry = null,
     normalizeCountryId = (x)=>x,
     alphaByNode = null,              // ★ NEW
-    defaultAlpha = 1                 // ★ NEW
+    defaultAlpha = 1,                 // ★ NEW
+    borderColorByNode = null,   // ★ 新增：逐节点边框色
+    borderWidthByNode = null,   // ★ 新增：逐节点边框宽
+    fillByNode = null           // ★ 新增：逐节点填充色（Alt 冲突）
   }
 ) {
   const svg = d3.select(svgEl);
@@ -166,13 +173,17 @@ export function mountMiniLink(
         gg.append('path')
           .attr('class', 'hex')
           .attr('d', hexD)
-          .attr('fill', d => resolveNodeColor(nodeMap.get(d._id), { colorByCountry, colorByPanelCountry, normalizeCountryId }))
+          .attr('fill', d => resolveNodeColor(nodeMap.get(d._id), { colorByCountry, colorByPanelCountry, normalizeCountryId, fillByNode }))
+
           .attr('fill-opacity', d => {                      // ★ NEW：节点透明度
             const a = pick(alphaByNode, d._id);
             return (typeof a === 'number' && a >= 0 && a <= 1) ? a : defaultAlpha;
           })
-          .attr('stroke', '#ffffff')
-          .attr('stroke-width', 1);
+          .attr('stroke', d => pick(borderColorByNode, d._id) || '#ffffff')
+          .attr('stroke-width', d => {
+              const w = pick(borderWidthByNode, d._id);
+              return (Number.isFinite(w) ? w : 1);
+            })
 
         gg.append('g')
           .attr('class', 'city-wrap')
@@ -202,7 +213,10 @@ export function mountMiniLink(
         ...next,
         normalizeCountryId: next?.normalizeCountryId || normalizeCountryId,
         alphaByNode: next?.alphaByNode ?? alphaByNode,
-        defaultAlpha: next?.defaultAlpha ?? defaultAlpha
+        defaultAlpha: next?.defaultAlpha ?? defaultAlpha,
+        borderColorByNode: next?.borderColorByNode ?? borderColorByNode,
+        borderWidthByNode: next?.borderWidthByNode ?? borderWidthByNode,
+        fillByNode: next?.fillByNode ?? fillByNode
       });
     },
     destroy() { offHover && offHover(); }

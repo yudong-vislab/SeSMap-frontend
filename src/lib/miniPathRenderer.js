@@ -38,6 +38,9 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
 
   // ★ NEW：透明度映射
   const alphaByNode = opts.alphaByNode || null;        // Map|Object，key "panelIdx:q,r"
+  const borderColorByNode = opts.borderColorByNode || null;
+  const borderWidthByNode = opts.borderWidthByNode || null;
+  const fillByNode = opts.fillByNode || null;
   const defaultAlpha = (typeof opts.defaultAlpha === 'number') ? opts.defaultAlpha : 1;
 
   // 如果你文件里还没有 pick 辅助函数，加一个非常小的：
@@ -82,6 +85,9 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
 
   // ⭐ 修改：颜色解析（面板|国家 → 全局国家 → modality）
   const colorOfNode = (n) => {
+    const nodeKey = `${n.panelIdx}:${n.q},${n.r}`;
+    const fill = pick(fillByNode, nodeKey);
+    if (fill) return fill;
     if (!n) return STYLE.COLOR_DEFAULT;
     const pid = Number.isInteger(n.panelIdx) ? n.panelIdx : null;
     const cid = n.country_id ?? null;
@@ -148,8 +154,11 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
           const a = pick(alphaByNode, key);
           return (typeof a === 'number' && a >= 0 && a <= 1) ? a : defaultAlpha;
         })
-        .attr('stroke', '#ffffff')
-        .attr('stroke-width', 1);
+        .attr('stroke', d => pick(borderColorByNode, idOf(d.panelIdx, d.q, d.r)) || '#ffffff')
+        .attr('stroke-width', d => {
+            const w = pick(borderWidthByNode, idOf(d.panelIdx, d.q, d.r));
+            return (Number.isFinite(w) ? w : 1);
+          })
       return gg;
     });
 }

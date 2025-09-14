@@ -81,7 +81,12 @@ const props = defineProps({
 
   // ★ 透明度映射
   alphaByNode: { type: [Object, Map], default: () => ({}) },
-  defaultAlpha: { type: Number, default: 1 }
+  defaultAlpha: { type: Number, default: 1 },
+
+  // ★ 新增：逐节点边框&逐节点填充（Alt 冲突覆盖）
+  borderColorByNode: { type: [Object, Map], default: () => ({}) },
+  borderWidthByNode: { type: [Object, Map], default: () => ({}) },
+  fillByNode: { type: [Object, Map], default: () => ({}) },
 })
 
 const emit = defineEmits(['update:selectedMsus'])
@@ -184,7 +189,10 @@ onMounted(() => {
     colorByPanelCountry: props.colorByPanelCountry,
     normalizeCountryId: props.normalizeCountryId,
     alphaByNode: props.alphaByNode,
-    defaultAlpha: props.defaultAlpha
+    defaultAlpha: props.defaultAlpha,
+    borderColorByNode: props.borderColorByNode,
+    borderWidthByNode: props.borderWidthByNode,
+    fillByNode: props.fillByNode
   })
 })
 
@@ -197,7 +205,10 @@ watch(
     props.colorByPanelCountry,
     props.normalizeCountryId,
     props.alphaByNode,
-    props.defaultAlpha
+    props.defaultAlpha,
+    props.borderColorByNode,
+    props.borderWidthByNode,
+    props.fillByNode
   ],
   () => {
     mini?.update({
@@ -208,7 +219,10 @@ watch(
       colorByPanelCountry: props.colorByPanelCountry,
       normalizeCountryId: props.normalizeCountryId,
       alphaByNode: props.alphaByNode,
-      defaultAlpha: props.defaultAlpha
+      defaultAlpha: props.defaultAlpha,
+      borderColorByNode: props.borderColorByNode,
+      borderWidthByNode: props.borderWidthByNode,
+      fillByNode: props.fillByNode
     })
   },
   { deep: true }

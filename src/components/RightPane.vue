@@ -41,6 +41,9 @@
                 :normalizeCountryId="step.normalizeCountryId"
                 :alpha-by-node="step.alphaByNode"
                 :default-alpha="step.defaultAlpha"
+                :borderColorByNode="step.borderColorByNode"  
+                :borderWidthByNode="step.borderWidthByNode"  
+                :fillByNode="step.fillByNode"                
               />
             </div>
           </div>
@@ -92,6 +95,10 @@ onMounted(() => {
 
       // ★★★ 新增：把透明度变成 node 粒度映射存起来
       alphaByNode: payload.alphaByNode || {},  
+      // ★ 新增：逐节点边框 & Alt 冲突覆盖（逐点填充）
+      borderColorByNode: payload.borderColorByNode || {},
+      borderWidthByNode: payload.borderWidthByNode || {},
+      fillByNode: payload.fillByNode || {},
 
       rawText: payload.rawText || '',
       summary: payload.summary || '',
