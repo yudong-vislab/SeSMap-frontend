@@ -43,7 +43,11 @@ async function onAddSubspace() {
 
 /* 点击 Save 时，打印当前选择的节点 */
 function onSave() {
+
   if (!ready.value || !controller) return
+
+  // 先刷新一次样式，把此刻每个 hex 的最终透明度写入缓存
+  controller?.refreshAllHexStyles?.();
 
   // 获取带 connected:true 的快照
   const snap = controller.getSelectionSnapshot?.() || { nodes: [], links: [] }

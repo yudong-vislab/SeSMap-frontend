@@ -82,6 +82,16 @@ const STYLE = {
   FOCUS_COUNTRY_FILL: '#FCFCFC',   // Alt 聚焦国家的统一填充色（不区分 modality）
   OPACITY_NONFOCUS: 0.08,          // Alt 聚焦时，非该国家 hex 的压暗透明度
 
+  // MSU → 透明度映射区间（数值越高越透明）
+  OPACITY_MSU_MIN: 0.15,  // msuCount = max 时用（最透明）
+  OPACITY_MSU_MAX: 0.95,  // msuCount = 0  时用（最不透明）
+  // 高亮透明度“加成”而不是绝对值：final = base + (1-base)*boost
+  OVERLAY_ALPHA_BOOST: {
+    hover: 0.15,          // 悬停 / 航线起点/hover
+    previewCenter: 0.12,  // 预览中心
+    previewNeighbor: 0.08,// 预览邻居
+    selected: 0.20        // 选中（无覆盖色时）
+  },
 
 };
 
@@ -169,6 +179,8 @@ export async function initSemanticMap({
     _lastLinks: [],
     currentMouse: { x: 0, y: 0 },
     selectedHex: null,
+    lastSelectionKind: null, // 'conflict' | 'group' | 'route' | 'connect' | null
+
     neighborKeySet: new Set(),
     flightStart: null,
     flightHoverTarget: null,
@@ -555,6 +567,32 @@ function ensureHatchPattern(panelIdx, svg, color) {
   return 'url(#' + pid + ')';
 }
 
+// === 依据每面板的 MSU 数量，建立“每格 alpha”缓存 ===
+function recomputeMsuAlphaForPanel(panelIdx) {
+  if (!App.msuAlphaByHex) App.msuAlphaByHex = new Map();
+  const bmap = App.hexBucketsByPanel?.[panelIdx];
+  if (!bmap || !(bmap instanceof Map)) return;
+
+  // 1) 找面板内的最大 MSU 数
+  let maxCount = 0;
+  bmap.forEach(b => { if (typeof b.msuCount === 'number' && b.msuCount > maxCount) maxCount = b.msuCount; });
+
+  const hi = STYLE.OPACITY_MSU_MAX ?? 0.25; // MSU=0 时
+  const lo = STYLE.OPACITY_MSU_MIN ?? 0.95; // MSU=max 时
+
+  // 2) 逐格映射
+  bmap.forEach(b => {
+    const k = `${panelIdx}|${b.q},${b.r}`;
+    let a = App?.config?.hex?.fillOpacity ?? STYLE.OPACITY_DEFAULT;
+    if (maxCount > 0) {
+      const t = Math.max(0, Math.min(1, (b.msuCount || 0) / maxCount)); // 0..1
+      a = lo + (hi - lo) * t; // 新：越多越不透明（alpha 递增）
+    }
+    App.msuAlphaByHex.set(k, a);
+  });
+}
+
+
 function buildBucketsForPanel(panelIdx, hexList) {
   var buckets = new Map(); // key: "q,r" -> {q,r,items:[], countries:Set, msuCount, _cycleIdx}
   for (var i=0;i<hexList.length;i++) {
@@ -573,6 +611,8 @@ function buildBucketsForPanel(panelIdx, hexList) {
   }
   return buckets;
 }
+
+
 
 function getBucket(panelIdx, q, r) {
   var map = (App.hexBucketsByPanel && App.hexBucketsByPanel[panelIdx]) ? App.hexBucketsByPanel[panelIdx] : null;
@@ -1193,6 +1233,17 @@ function setConflictColorOverride(panelIdx, color, alphaByKey) {
       alphaMap.set(kk, v);
     }
   }
+  
+  if (!alphaMap || alphaMap.size === 0) {
+    alphaMap = new Map();
+    const keys = getConflictKeysInPanel(panelIdx); // Set<"p|q,r">
+    keys.forEach(k => {
+      const a = (App.alphaCacheByHex?.get?.(k) ?? App.msuAlphaByHex?.get?.(k) ?? STYLE.OPACITY_DEFAULT);
+      alphaMap.set(k, a);
+    });
+  }
+
+
   App.panelConflictColors.set(panelIdx, { color, alphaByKey: alphaMap });
 }
 
@@ -1208,6 +1259,7 @@ function _normCid(cid) {
 }
 
 // —— 覆盖色：写入 —— //
+// —— 覆盖色：写入（按 MSU → 透明度 基线为该国每个 hex 建立 alphaMap）——
 function setCountryColorOverride(panelIdx, countryId, color, alphaByKey) {
   if (!App.panelCountryColors) App.panelCountryColors = new Map();
 
@@ -1220,25 +1272,35 @@ function setCountryColorOverride(panelIdx, countryId, color, alphaByKey) {
   const cid = _normCid(countryId);
 
   // 统一 alphaByKey 的 key 形态 -> `${panelIdx}|${q},${r}`
-  let alphaMap = new Map();
+  let incoming = new Map();
   if (alphaByKey instanceof Map) {
-    alphaMap = new Map(
-      Array.from(alphaByKey.entries()).map(([k, v]) => {
-        const kk = (typeof k === 'string')
-          ? (k.includes('|') ? k : k.replace(':', '|'))    // "p:q,r" -> "p|q,r"
-          : String(k);
-        return [kk, v];
-      })
-    );
+    incoming = new Map(Array.from(alphaByKey.entries()).map(([k, v]) => {
+      const kk = (typeof k === 'string') ? (k.includes('|') ? k : k.replace(':','|')) : String(k);
+      return [kk, v];
+    }));
   } else if (alphaByKey && typeof alphaByKey === 'object') {
     for (const [k, v] of Object.entries(alphaByKey)) {
-      const kk = k.includes('|') ? k : k.replace(':', '|');
-      alphaMap.set(kk, v);
+      const kk = k.includes('|') ? k : k.replace(':','|');
+      incoming.set(kk, v);
     }
   }
 
+  // —— 关键：为“该国在该面板里的所有 hex”构造每格透明度 —— //
+  // 规则：优先用 “MSU 基线” -> 没有就用 “渲染时的最终透明度缓存” -> 再没有用默认
+  const alphaMap = new Map();
+  const allKeys = getCountryKeysInPanel(panelIdx, _normCid(countryId)); // Set<"p|q,r">
+  allKeys.forEach(k => {
+    const a =
+      (App.msuAlphaByHex?.get?.(k)) ??
+      (App.alphaCacheByHex?.get?.(k)) ??
+      incoming.get(k) ??
+      STYLE.OPACITY_DEFAULT;
+    alphaMap.set(k, a);
+  });
+
   perPanel.set(cid, { color, alphaByKey: alphaMap });
 }
+
 
 // —— 覆盖色：读取 —— //
 function getCountryColorOverride(panelIdx, countryId) {
@@ -1637,6 +1699,7 @@ function hideHexTooltip() {
 
   function computeHoverOrCountryPreview(panelIdx, q, r, { withCtrl=false, withShift=false, withAlt=false } = {}) {
     if (withAlt) {
+  App._forceSingleNextClick = true;
       // 判定当前格是否冲突：同一 (q,r) 存在多个国家
       const bucket = getBucket(panelIdx, q, r);
       const isConflict = !!(bucket && bucket.countries && bucket.countries.size > 1);
@@ -1973,6 +2036,9 @@ function hideHexTooltip() {
       recomputePersistentFromRoutes();
       App.highlightedHexKeys.clear();
       App.hoveredHex = null;
+
+      App.lastSelectionKind = 'connect';
+
       updateHexStyles();
       publishToStepAnalysis();
     }
@@ -2402,6 +2468,8 @@ function hideHexTooltip() {
     // === Build per-hex buckets to avoid overlapping ===
     var _buckets = buildBucketsForPanel(panelIdx, hexList);
     App.hexBucketsByPanel[panelIdx] = _buckets;
+    recomputeMsuAlphaForPanel(panelIdx);
+
     var uniqueHexes = [];
     _buckets.forEach(function(b){
       // Use first item as representative for drawing (q,r kept the same)
@@ -2909,187 +2977,180 @@ function hideHexTooltip() {
     return out;
   }
 
-function updateHexStyles() {  
-    App.subspaceSvgs.forEach((svg, panelIdx) => {
-      const override = App.panelFocusOverrides.get(panelIdx);
-      const focusCid  = override && override.countryId ? normalizeCountryId(override.countryId)
-                                                      : (App.focusCountryId ? normalizeCountryId(App.focusCountryId) : null);
-      const focusMode = override && override.mode ? override.mode : (App.focusMode || null);
+function updateHexStyles() {
+  App.subspaceSvgs.forEach((svg, panelIdx) => {
+    const override = App.panelFocusOverrides.get(panelIdx);
+    const focusCid  = override && override.countryId
+      ? normalizeCountryId(override.countryId)
+      : (App.focusCountryId ? normalizeCountryId(App.focusCountryId) : null);
+    const focusMode = override && override.mode ? override.mode : (App.focusMode || null);
 
-      svg.selectAll('g.hex').each(function(d) {
-        
-        const core = d3.select(this).select('path.hex-core');
-        if (!core.empty()) core.attr('fill', computeHexBaseFill(panelIdx, d.q, d.r, d.modality));
-        const gSel  = d3.select(this);
-        const path  = gSel.select('path');
-        const hatch = gSel.select('path.hex-hatch');
-        const key   = `${panelIdx}|${d.q},${d.r}`;
-        const baseFill = getHexFillColor(d);
+    svg.selectAll('g.hex').each(function(d) {
+      const core = d3.select(this).select('path.hex-core');
+      if (!core.empty()) core.attr('fill', computeHexBaseFill(panelIdx, d.q, d.r, d.modality));
 
-        // === 记录最终边框样式到缓存（供右端使用） ===
-        const stroke  = path.attr('stroke') || (App?.config?.hex?.borderColor) || '#FFFFFF';
-        const strokeW = Number(path.attr('stroke-width')) || (App?.config?.hex?.borderWidth) || 1;
-        if (!App.borderCacheByHex) App.borderCacheByHex = new Map();
-        App.borderCacheByHex.set(key, { stroke, strokeW });
+      const gSel  = d3.select(this);
+      const path  = gSel.select('path');
+      const hatch = gSel.select('path.hex-hatch');
+      const key   = `${panelIdx}|${d.q},${d.r}`;
 
+      // 基础底色（未覆盖时）
+      const baseFill = getHexFillColor(d);
 
-        // —— 国家与 Alt 焦点 —— //
-        const thisCid = d.country_id ? normalizeCountryId(d.country_id) : null;
-        const isFocusHex = !!(focusCid && thisCid === focusCid);
+      // === 记录最终边框样式到缓存（供右端使用） ===
+      const stroke  = path.attr('stroke') || (App?.config?.hex?.borderColor) || '#FFFFFF';
+      const strokeW = Number(path.attr('stroke-width')) || (App?.config?.hex?.borderWidth) || 1;
+      if (!App.borderCacheByHex) App.borderCacheByHex = new Map();
+      App.borderCacheByHex.set(key, { stroke, strokeW });
 
-        // Alt=filled 时你的原底层
-        let focusBaseFill    = baseFill;
-        let focusBaseOpacity = STYLE.OPACITY_DEFAULT;
-        if (focusCid && focusMode === 'filled') {
-          focusBaseFill    = isFocusHex ? STYLE.FOCUS_COUNTRY_FILL : baseFill;
-          focusBaseOpacity = isFocusHex ? STYLE.OPACITY_SELECTED   : STYLE.OPACITY_NONFOCUS;
+      // —— 国家与 Alt 焦点 —— //
+      const thisCid     = d.country_id ? normalizeCountryId(d.country_id) : null;
+      const isFocusHex  = !!(focusCid && thisCid === focusCid);
+
+      // Alt=filled：仅改变焦点国内的“填充色”，并压暗非焦点；不要统一透明度
+      let focusBaseFill   = baseFill;
+      let nonFocusOpacity = null;
+      if (focusCid && focusMode === 'filled') {
+        focusBaseFill   = isFocusHex ? STYLE.FOCUS_COUNTRY_FILL : baseFill;
+        if (!isFocusHex) nonFocusOpacity = STYLE.OPACITY_NONFOCUS; // 仅非焦点压暗
+      }
+
+      // —— 覆盖色（国家） —— //
+      const countryOv = thisCid ? getCountryColorOverride(panelIdx, thisCid) : null;
+      const confirmedCountryColor = countryOv?.color || null;
+      const confirmedCountryAlphaMap = countryOv?.alphaByKey || null;
+
+      // —— 预览（国家） —— //
+      let previewColor = null;
+      let previewAlpha = null;
+      if (App._pendingColorEdit && isFocusHex) {
+        const p = App._pendingColorEdit;
+        if (p.panelIdx === panelIdx && p.countryId === thisCid && p.keys.has(key)) {
+          previewColor = p.color || null;
+          previewAlpha = p.alphaByKey?.get?.(key) ?? null;
         }
+      }
 
-        // —— 已确认颜色覆盖（面板级按国家） —— //
-        const ov = thisCid ? getCountryColorOverride(panelIdx, thisCid) : null;
-        let confirmedColor = ov ? ov.color : null;
-        let confirmedAlpha = ov ? (ov.alphaByKey.get(key) ?? null) : null;
+      // —— 冲突优先：当 hex 是冲突时，用冲突覆盖 —— //
+      const isConflict = isConflictHex(panelIdx, d.q, d.r);
+      let confirmedConflictColor = null;
+      let confirmedConflictAlphaMap = null;
+      let previewConflictColor = null;
+      let previewConflictAlpha = null;
 
-        // —— 临时预览（仅 Alt 焦点的 pending） —— //
-        let previewColor = null;
-        let previewAlpha = null;
-        if (App._pendingColorEdit && isFocusHex) {
-          const p = App._pendingColorEdit;
-          if (p.panelIdx === panelIdx && p.countryId === thisCid && p.keys.has(key)) {
-            previewColor = p.color;
-            previewAlpha = p.alphaByKey.get(key) ?? null;
+      if (isConflict) {
+        const cov = getConflictColorOverride(panelIdx);
+        if (cov) {
+          confirmedConflictColor    = cov.color || null;
+          confirmedConflictAlphaMap = cov.alphaByKey || null;
+        }
+        if (App._pendingConflictEdit && App._pendingConflictEdit.panelIdx === panelIdx) {
+          const p = App._pendingConflictEdit;
+          if (p.keys.has(key)) {
+            previewConflictColor = p.color || null;
+            previewConflictAlpha = p.alphaByKey?.get?.(key) ?? null;
           }
         }
+      }
 
-        // —— 冲突优先：当 hex 是冲突时，禁用“国家覆盖色”，启用“冲突覆盖色/预览” —— //
-        const isConflict = isConflictHex(panelIdx, d.q, d.r);
-        let conflictConfirmedColor = null;
-        let conflictConfirmedAlpha = null;
-        let conflictPreviewColor   = null;
-        let conflictPreviewAlpha   = null;
+      // —— 颜色与 alpha 选择优先级 —— //
+      // 颜色：冲突预览 > 冲突已确认 > 国家预览 > 国家已确认 > 焦点底色 > 默认底色
+      let finalFill =
+        previewConflictColor ??
+        confirmedConflictColor ??
+        previewColor ??
+        confirmedCountryColor ??
+        focusBaseFill ??
+        baseFill;
 
-        if (isConflict) {
-          // 1) 读取已确认的冲突覆盖
-          const cov = getConflictColorOverride(panelIdx);
-          if (cov) {
-            conflictConfirmedColor = cov.color || null;
-            conflictConfirmedAlpha = cov.alphaByKey?.get?.(key) ?? null;
-          }
-          // 2) 读取临时预览（颜色菜单打开时）
-          if (App._pendingConflictEdit && App._pendingConflictEdit.panelIdx === panelIdx) {
-            const p = App._pendingConflictEdit;
-            if (p.keys.has(key)) {
-              conflictPreviewColor = p.color;
-              conflictPreviewAlpha = p.alphaByKey.get(key) ?? null;
-            }
-          }
+      // alpha：默认用 MSU 基线；若覆盖/预览提供 per-hex alpha，用它覆盖该格
+      const msuAlpha = App.msuAlphaByHex?.get?.(key) ?? STYLE.OPACITY_DEFAULT;
 
-          // 3) 冲突时，强制清空“国家覆盖”的颜色与 alpha，让后续逻辑只看冲突覆盖
-          previewColor = null;
-          previewAlpha = null;
-          // confirmed 来自国家覆盖的也清空
-          // 注：这里重用变量名，保持后面 useOverrideColorNow 统一判断
-          if (conflictPreviewColor || conflictConfirmedColor) {
-            previewColor = conflictPreviewColor;
-            previewAlpha = conflictPreviewAlpha;
-            // 用一个占位把 alpha 传下去
-            var _confAlpha = (conflictPreviewAlpha != null) ? conflictPreviewAlpha : conflictConfirmedAlpha;
-            // 用 confirmedColor 承载“已确认的冲突色”（若无预览）
-            if (!previewColor) {
-              // 没有预览时，通过 confirmedColor 传递
-              var _dummy = conflictConfirmedColor;
-              // 使用闭包变量名不冲突的写法
-              // 覆盖至外层变量
-              confirmedColor = conflictConfirmedColor;
-              confirmedAlpha = _confAlpha;
+      let confirmedAlpha = null;
+      if (isConflict) {
+        confirmedAlpha = confirmedConflictAlphaMap?.get?.(key) ?? null;
+      } else {
+        confirmedAlpha = confirmedCountryAlphaMap?.get?.(key) ?? null;
+      }
 
-            } else {
-              // 有预览时，confirmedColor 为空，previewColor 生效
-              confirmedColor = null;
-              confirmedAlpha = _confAlpha;
-            
-            }
-          } else {
-            // 没有冲突覆盖：保持 confirmed/preview 为空，让后续走“基础底色”(灰)
-            confirmedColor = null;
-            previewColor = null;
-            confirmedAlpha = null;
-            previewAlpha = null;
-            
-          }
-        }
+      // 2) 基底透明度
+      let baseOpacity = msuAlpha;
 
+      // Alt 填充聚焦：压暗非焦点国家；焦点国内保留各自 MSU 透明度
+      if (nonFocusOpacity != null) {
+        baseOpacity = Math.min(baseOpacity, nonFocusOpacity);
+      }
 
-        // —— 交互态 —— //
-        const isSelected    = App.persistentHexKeys.has(key);
-        const isHovered     = !!(App.hoveredHex && App.hoveredHex.panelIdx === panelIdx && App.hoveredHex.q === d.q && App.hoveredHex.r === d.r);
-        const isFlightStart = !!(App.flightStart  && App.flightStart.panelIdx  === panelIdx && App.flightStart.q === d.q && App.flightStart.r === d.r);
-        const isFlightHover = !!(App.flightHoverTarget && App.flightHoverTarget.panelIdx === panelIdx && App.flightHoverTarget.q === d.q && App.flightHoverTarget.r === d.r);
+      // 覆盖色/预览若提供 per-hex alpha，则替换基线
+      if (previewConflictAlpha != null) {
+        baseOpacity = previewConflictAlpha;
+      } else if (confirmedAlpha != null) {
+        baseOpacity = confirmedAlpha;
+      } else if (previewAlpha != null) {
+        baseOpacity = previewAlpha;
+      }
 
-        const inPreview         = App.highlightedHexKeys.has(key);
-        const isPreviewCenter   = inPreview && isHovered;
-        const isPreviewNeighbor = inPreview && !isPreviewCenter;
+      // —— 交互态 —— //
+      let isSelected       = App.persistentHexKeys.has(key);
+      let isHovered        = !!(App.hoveredHex && App.hoveredHex.panelIdx === panelIdx && App.hoveredHex.q === d.q && App.hoveredHex.r === d.r);
+      let isFlightStart    = !!(App.flightStart  && App.flightStart.panelIdx  === panelIdx && App.flightStart.q === d.q && App.flightStart.r === d.r);
+      let isFlightHover    = !!(App.flightHoverTarget && App.flightHoverTarget.panelIdx === panelIdx && App.flightHoverTarget.q === d.q && App.flightHoverTarget.r === d.r);
+      let inPreview        = App.highlightedHexKeys.has(key);
+      let isPreviewCenter  = inPreview && isHovered;
+      let isPreviewNeighbor= inPreview && !isPreviewCenter;
 
-        // —— 计算：是否此刻应使用覆盖色 —— //
-        const hasAnyOverride = !!(previewColor || confirmedColor);
-        const inActiveInteraction = isSelected || isHovered || isPreviewCenter || isPreviewNeighbor || isFlightStart || isFlightHover;
-        const useOverrideColorNow =
-          hasAnyOverride && ( (focusMode === 'filled' && isFocusHex) || inActiveInteraction );
+      // 3) 交互叠加透明度（不要把有覆盖色的选中态硬拉到 1）
+      let overlayOpacity = STYLE.OPACITY_DEFAULT;
+      if (isHovered || isFlightStart || isFlightHover) {
+        overlayOpacity = STYLE.OPACITY_HOVER;
+      } else if (isPreviewCenter) {
+        overlayOpacity = STYLE.OPACITY_PREVIEW_CENTER;
+      } else if (isPreviewNeighbor) {
+        overlayOpacity = STYLE.OPACITY_PREVIEW_NEIGHBOR;
+      } else if (isSelected && !previewColor && !confirmedCountryColor && !confirmedConflictColor && previewConflictColor == null) {
+        // 只有在没有覆盖色时，选中才抬高；有覆盖色时保持基线差异
+        overlayOpacity = STYLE.OPACITY_SELECTED;
+      }
 
-        // 1) 最终填充色
-        let finalFill = useOverrideColorNow
-          ? (previewColor || confirmedColor)
-          : ((focusCid && focusMode === 'filled') ? focusBaseFill : baseFill);
+      let boost = Math.max(0, Math.min(1, overlayOpacity)); // overlayOpacity 改名更贴切也可
+      let finalOpacity = baseOpacity + (1 - baseOpacity) * boost;
 
-        // 2) 基底透明度（优先使用每个 hex 保存的 alpha 渐变）
-        let baseOpacity = (focusCid && focusMode === 'filled') ? focusBaseOpacity : STYLE.OPACITY_DEFAULT;
-        if (useOverrideColorNow) {
-          const a = (previewAlpha != null) ? previewAlpha
-                : (confirmedAlpha != null) ? confirmedAlpha
-                : null;
-          if (a != null) baseOpacity = a;
-        } else if (isSelected && !hasAnyOverride) {
-          // 没有覆盖色时，选中态维持老逻辑更亮一些
-          baseOpacity = Math.max(baseOpacity, STYLE.OPACITY_SELECTED);
-        }
+      // 写入最终透明度缓存（右侧用）
+      if (!App.alphaCacheByHex) App.alphaCacheByHex = new Map();
+      App.alphaCacheByHex.set(key, finalOpacity);
 
-        // 3) 交互叠加透明度（不要把有覆盖色的选中态硬拉到 1）
-        let overlayOpacity = STYLE.OPACITY_DEFAULT;
-        if (isHovered || isFlightStart || isFlightHover) {
-          overlayOpacity = STYLE.OPACITY_HOVER;
-        } else if (isPreviewCenter) {
-          overlayOpacity = STYLE.OPACITY_PREVIEW_CENTER;
-        } else if (isPreviewNeighbor) {
-          overlayOpacity = STYLE.OPACITY_PREVIEW_NEIGHBOR;
-        } else if (isSelected && !useOverrideColorNow) {
-          overlayOpacity = STYLE.OPACITY_SELECTED;
-        }
+      // 预览邻居的斜线填充 + 应用样式
+      hatch.attr('fill', isPreviewNeighbor ? `url(#hex-hatch-${panelIdx})` : 'none');
+      path .attr('fill', finalFill)
+           .attr('fill-opacity', finalOpacity);
 
-        const finalOpacity = Math.max(baseOpacity, overlayOpacity);
+      // 冲突选择态的边框专属规则
+      let conflictMode = (App.lastSelectionKind === 'conflict' && App.persistentHexKeys && App.persistentHexKeys.size > 0);
+      isSelected = App.persistentHexKeys && App.persistentHexKeys.has(`${panelIdx}|${d.q},${d.r}`);
+      let strokeOpacity = conflictMode ? (isSelected ? STYLE.BORDER_ALT_ACTIVE : STYLE.BORDER_ALT_OTHER) : 1;
+      let strokeWidth   = conflictMode ? (App.config.hex.borderWidth * (isSelected ? 1.6 : 1.0)) : App.config.hex.borderWidth;
+      path.attr('stroke-opacity', strokeOpacity).attr('stroke-width', strokeWidth);
+  try { applySpotlight(panelIdx); } catch(e) { console.warn(e); }
 
-        // 预览邻居的斜线填充
-        const needHatch = isPreviewNeighbor;
-        hatch.attr('fill', needHatch ? `url(#hex-hatch-${panelIdx})` : 'none');
-        path .attr('fill', finalFill).attr('fill-opacity', finalOpacity);
-      });
     });
+  });
 
-    // —— 边界重绘（保持你的原逻辑）—— //
-    App.currentData?.subspaces?.forEach((space, i) => {
-      const svg = App.subspaceSvgs[i];
-      if (!svg || svg.empty()) return;
+  // —— 边界重绘（保持你的原逻辑）—— //
+  App.currentData?.subspaces?.forEach((space, i) => {
+    const svg = App.subspaceSvgs[i];
+    if (!svg || svg.empty()) return;
 
-      const override = App.panelFocusOverrides.get(i);
-      const focusCid  = override && override.countryId ? normalizeCountryId(override.countryId)
-                                                      : (App.focusCountryId ? normalizeCountryId(App.focusCountryId) : null);
-      const focusMode = override && override.mode ? override.mode : (App.focusMode || null);
+    const override = App.panelFocusOverrides.get(i);
+    const focusCid  = override && override.countryId ? normalizeCountryId(override.countryId)
+                                                    : (App.focusCountryId ? normalizeCountryId(App.focusCountryId) : null);
+    const focusMode = override && override.mode ? override.mode : (App.focusMode || null);
 
-      drawCountries(space, svg, App.config.hex.radius, {
-        focusCountryId: focusCid,
-        focusMode: focusMode
-      });
+    drawCountries(space, svg, App.config.hex.radius, {
+      focusCountryId: focusCid,
+      focusMode: focusMode
     });
-  }
+  });
+}
 
 
   /* =========================
@@ -3398,7 +3459,8 @@ function updateHexStyles() {
         App.persistentHexKeys.clear();
         keys.forEach(k => App.persistentHexKeys.add(k));
         App.selectedHex = { panelIdx, q, r };
-
+        App.lastSelectionKind = 'conflict';
+App._forceSingleNextClick = true;
         // 2) 不改变国家聚焦；只刷新样式（高亮与透明度随 ramp）
         updateHexStyles();
         publishToStepAnalysis();
@@ -3445,7 +3507,26 @@ function updateHexStyles() {
     // clearAltFocusForPanelOnNormalClick(panelIdx);
     degradeFocusToOutlineFor(panelIdx);
 
-    // —— Connect Active：插入模式优先（含“等待锚点”的绿灯）——————————————
+    
+
+// —— Clear previous ALT block selection on first normal click ——
+if (App._forceSingleNextClick || App.lastSelectionKind === 'conflict' || App.lastSelectionKind === 'country') {
+  App._forceSingleNextClick = false;
+  try { App.persistentHexKeys && App.persistentHexKeys.clear(); } catch(e){}
+  try { App.selectedRouteIds && App.selectedRouteIds.clear(); } catch(e){}
+  try { App.excludedHexKeys && App.excludedHexKeys.clear(); } catch(e){}
+  try { App.highlightedHexKeys && App.highlightedHexKeys.clear(); } catch(e){}
+  App.selectedHex = null;
+  if (App.panelConflictColors instanceof Map) {
+    // Remove conflict paint cache for this panel to revert to MSU-driven base
+    App.panelConflictColors.delete(panelIdx);
+  }
+  App.lastSelectionKind = null;
+  updateHexStyles();
+  // continue to handle this click normally (group/route/connect), don't return here
+}
+
+// —— Connect Active：插入模式优先（含“等待锚点”的绿灯）——————————————
     if (App.insertMode) {
       // 4.1 还没有锚点：先确定锚点所在的路线与 index
       if (App.insertMode.awaitingAnchor) {
@@ -3463,6 +3544,9 @@ function updateHexStyles() {
             App.insertMode.awaitingAnchor = false;
             App.selectedHex = { panelIdx, q, r };
             recomputePersistentFromRoutes();
+
+            App.lastSelectionKind = 'route';
+
             updateHexStyles();
             ModeUI.computeAndApply();
             return; // 锚点确定后，下一次点击再走“添加/结束”
@@ -3512,6 +3596,9 @@ function updateHexStyles() {
         const idx = indexOfPointInLink(route, panelIdx, q, r);
         if (idx >= 0) {
           beginInsertMode(route, idx);
+
+          App.lastSelectionKind = 'connect';  
+
           App.selectedHex = { panelIdx, q, r };
           recomputePersistentFromRoutes();
           updateHexStyles();
@@ -3589,6 +3676,9 @@ function updateHexStyles() {
     }
     App.highlightedHexKeys.clear();
     App.hoveredHex = null;
+
+    App.lastSelectionKind = 'group';
+
     updateHexStyles();
     publishToStepAnalysis();
   }
@@ -4185,4 +4275,37 @@ export function destroySemanticMap(cleanup) {
   if (typeof cleanup === 'function') cleanup();
 }
 
+
+
+
+/* === Spotlight: fade unrelated hexes when a selection exists === */
+function applySpotlight(panelIdx) {
+  try {
+    const spotlightOn = !!(App.persistentHexKeys && App.persistentHexKeys.size > 0);
+    if (!spotlightOn) return;
+    const svg = App.subspaceSvgs?.[panelIdx];
+    if (!svg) return;
+    svg.selectAll('g.hex').each(function(d) {
+      const gSel = d3.select(this);
+      const path = gSel.select('path');
+      const hatch = gSel.select('.hatch, pattern, defs'); // best-effort
+      const key = `${panelIdx}|${d.q},${d.r}`;
+      const inSpotlight = !!App.persistentHexKeys?.has?.(key);
+      if (!inSpotlight) {
+        // force fallback base gray if available; else keep current fill but fade heavily
+        const baseGray = (STYLE?.HEX_FILL_TEXT || '#DCDCDC');
+        path.attr('fill', baseGray);
+        // OPACITY_ALT_FADE: define or fallback to 0.08
+        const fade = (STYLE && typeof STYLE.OPACITY_ALT_FADE === 'number') ? STYLE.OPACITY_ALT_FADE : 0.08;
+        path.attr('fill-opacity', fade);
+        path.attr('stroke-opacity', 0);
+        if (!hatch.empty()) {
+          hatch.attr('fill', 'none');
+        }
+      }
+    });
+  } catch (e) {
+    console.warn('[applySpotlight] error:', e);
+  }
+}
 
