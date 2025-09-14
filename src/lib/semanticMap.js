@@ -1,3 +1,20 @@
+
+/* === Random color helpers (top-level, guaranteed) === */
+var COLOR_PALETTE = (typeof COLOR_PALETTE !== 'undefined' && COLOR_PALETTE) ? COLOR_PALETTE : [
+  '#A9D08D', '#FFD966', '#9DC3E6', '#F4B183', '#C9B5F4',
+  '#F8CBAD', '#B7DEE8', '#C6E0B4', '#FFE699', '#BDD7EE',
+  '#C5E0B3', '#D9E1F2', '#E2F0D9', '#FCE4D6', '#EAD1DC'
+];
+var pickRandomColor = (typeof pickRandomColor === 'function') ? pickRandomColor : function(seedStr){
+  var arr = COLOR_PALETTE; if (!arr || !arr.length) return '#A9D08D';
+  if (seedStr) {
+    var h = 0; for (var i = 0; i < seedStr.length; i++) h = (h * 33 + seedStr.charCodeAt(i)) | 0;
+    return arr[Math.abs(h) % arr.length];
+  }
+  return arr[Math.floor(Math.random() * arr.length)];
+};
+try { if (typeof App !== 'undefined' && App) { App.pickRandomColor = pickRandomColor; } } catch(_) {}
+/* === End random color helpers === */
 // src/lib/semanticMap.js
 import * as d3 from 'd3';
 
@@ -199,7 +216,8 @@ export async function initSemanticMap({
     // 选中与快照
     persistentHexKeys: new Set(),
     excludedHexKeys: new Set(),
-    selectedRouteIds: new Set(),   // ★ 新增：当前被选中的“整条线路”的 id 集合（统计 road/river/flight）
+    selectedRouteIds: new Set(),
+    selectedEdgeKeys: new Set(),  // NEW: selected single-edge set (undirected keys)   // ★ 新增：当前被选中的“整条线路”的 id 集合（统计 road/river/flight）
     modKeys: { ctrl: false, meta: false, shift: false, alt: false },
     _lastSnapshot: null,
     activeAltCountry: null,
@@ -529,6 +547,31 @@ function buildSplitLinks(rawLinks) {
     }
   });
   return links;
+}
+
+
+function emitSelectionPayload(){
+  try{
+    const nodes = [];
+    const edges = [];
+    (App.persistentHexKeys||new Set()).forEach(k=>{
+      const [p, qr] = String(k).split('|');
+      const [q, r] = qr.split(',').map(Number);
+      const panelIdx = Number(p);
+      const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${q},${r}`) || { q, r };
+      // Determine fill and alpha
+      let fill = null;
+      try { fill = getHexFillColor(hex); } catch(e) {}
+      const alpha = App.msuAlphaByHex?.get?.(`${panelIdx}|${q},${r}`) ?? STYLE.OPACITY_DEFAULT;
+      nodes.push({ panelIdx, q, r, color: fill, alpha, state: 'selected' });
+    });
+    (App.selectedEdgeKeys||new Set()).forEach(e=>edges.push(e));
+    const payload = { nodes, edges, kind: App.lastSelectionKind||null };
+    if (typeof App.onHexSelectionChange === 'function') App.onHexSelectionChange(payload);
+    if (typeof window !== 'undefined' && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent('semanticmap:selection', { detail: payload }));
+    }
+  }catch(e){ console.warn('emitSelectionPayload failed:', e); }
 }
 
 function publishToStepAnalysis() {
@@ -1043,9 +1086,10 @@ function renderBucketTooltipHTML(bucket) {
       return !!(App.insertMode || App.flightStart);
     }
     function isConnectArmedNow(withCtrl, withShift) {
-      // 只要“键盘 Ctrl+Shift” 或 “按钮黄灯 connectArmed”为真，即判定为 armed
-      return (!!withCtrl && !!withShift) || App.uiPref.connectArmed;
-    }
+  // connect-edit disabled
+  return false;
+}
+
 
     // ★ 新增：Route 模式是否开启（键盘 Ctrl/⌘ 或 按钮 Route 绿灯）
     function isRouteMode(withCtrlLike) {
@@ -2023,27 +2067,16 @@ function hideHexTooltip() {
 
 
   function beginInsertMode(route, anchorIdx){
-    App.insertMode = { routeId: linkKey(route), anchorIndex: anchorIdx, inserting: true };
-    ModeUI.computeAndApply();   // 让 Connect 变绿
-  }
+  // removed connect-edit
+  return;
+}
+
 
   function endInsertMode(commit = true){
-    App.insertMode = null;
+  // removed connect-edit
+  return;
+}
 
-    if (commit) {
-      // 成功提交后刷新
-      drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
-      recomputePersistentFromRoutes();
-      App.highlightedHexKeys.clear();
-      App.hoveredHex = null;
-
-      App.lastSelectionKind = 'connect';
-
-      updateHexStyles();
-      publishToStepAnalysis();
-    }
-    ModeUI.computeAndApply({});   // 根据当前修饰键/状态回落到 Route 或 Cluster
-  }
 
 
   // === 路线级选择：辅助 ===
@@ -2605,7 +2638,7 @@ function hideHexTooltip() {
                 const { keys, alphaByKey } = buildConflictAlphaRampFor(panelIdx);
                 App._pendingConflictEdit = {
                   panelIdx,
-                  color: getConflictColorOverride(panelIdx)?.color || '#FFCC00',
+                  color: getConflictColorOverride(panelIdx)?.color || pickRandomColor(`conflict:${panelIdx}`),
                   keys,
                   alphaByKey
                 };
@@ -2618,7 +2651,7 @@ function hideHexTooltip() {
                 App._pendingColorEdit = {
                   panelIdx,
                   countryId,
-                  color: getCountryColorOverride(panelIdx, countryId)?.color || '#A9D08D',
+                  color: getCountryColorOverride(panelIdx, countryId)?.color || pickRandomColor(`country:${panelIdx}:${String(countryId)}`),
                   keys,
                   alphaByKey
                 };
@@ -3443,245 +3476,77 @@ function updateHexStyles() {
 
 
   function handleSingleClick(panelIdx, q, r, withCtrl = false, withShift = false) {
-    const k = pkey(panelIdx, q, r);
-    const ctrlLike = !!withCtrl;
-    const armed = isConnectArmedNow(withCtrl, withShift); // 键盘(Ctrl+Shift) 或 按钮黄灯
-    const routeMode = isRouteMode(ctrlLike);              // 键盘(Ctrl/⌘) 或 按钮 Route 绿灯
-  
-    // ★★★ Alt：冲突 or 国家
-    if (App.modKeys.alt) {
-      // 先看是否点在“冲突格”
-      const conflict = isConflictHex(panelIdx, q, r);
-      if (conflict) {
-        // 1) 选中整块冲突区
-        const { keys } = buildConflictAlphaRampFor(panelIdx);
-        // 清掉旧选集，换成冲突块（也可按需与旧选集合并）
-        App.persistentHexKeys.clear();
-        keys.forEach(k => App.persistentHexKeys.add(k));
-        App.selectedHex = { panelIdx, q, r };
-        App.lastSelectionKind = 'conflict';
-App._forceSingleNextClick = true;
-        // 2) 不改变国家聚焦；只刷新样式（高亮与透明度随 ramp）
-        updateHexStyles();
-        publishToStepAnalysis();
-        return;
-      }
 
-      // —— 否则：按“国家聚焦/切换”的旧逻辑 ——
-      const hex = App.hexMapsByPanel[panelIdx]?.get(`${q},${r}`);
-      const raw = hex?.country_id || null;
-      const isolated = App.altIsolatedPanels.has(panelIdx);
-      if (!raw) {
-        if (isolated) {
-          App.panelFocusOverrides.set(panelIdx, { countryId: null, mode: null });
-        } else {
-          setCountryFocus(null, null);
-        }
-        updateHexStyles();
-        return;
-      }
-      const cid = normalizeCountryId(raw);
-      if (isolated) {
-        const cur = App.panelFocusOverrides.get(panelIdx);
-        if (!cur || cur.countryId !== cid) {
-          App.panelFocusOverrides.set(panelIdx, { countryId: cid, mode: 'filled' });
-        } else {
-          const next = (cur.mode === 'filled') ? 'outline' : 'filled';
-          App.panelFocusOverrides.set(panelIdx, { countryId: cid, mode: next });
-        }
-      } else {
-        if (!App.focusCountryId) {
-          setCountryFocus(cid, 'filled');
-        } else if (App.focusCountryId === cid) {
-          setCountryFocus(cid, App.focusMode === 'filled' ? 'outline' : 'filled');
-        } else {
-          setCountryFocus(cid, 'filled');
-        }
-      }
+  const k = pkey(panelIdx, q, r);
+
+  // --- Alt: PREVIEW ONLY ---
+  if (App.modKeys && App.modKeys.alt) {
+    const conflict = isConflictHex(panelIdx, q, r);
+    if (conflict) {
+      const ramp = buildConflictAlphaRampFor(panelIdx); // { keys:Set, alphaByKey:Map }
+      App.highlightedHexKeys = new Set(ramp.keys);
+      App._pendingConflictEdit = {
+        panelIdx,
+        keys: new Set(ramp.keys), // 添加 keys
+        color: (getConflictColorOverride(panelIdx)?.color),
+        alphaByKey: ramp.alphaByKey
+      };
+      App.lastSelectionKind = 'conflict-preview';
       updateHexStyles();
       return;
+    } else {
+      // Alt on a country cell => preview entire country (border emphasis), not recolor
+      const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${q},${r}`);
+      const cid = hex?.country_id ? normalizeCountryId(hex.country_id) : null;
+      if (cid) {
+        const keys = getCountryKeysInPanel(panelIdx, cid);
+        App.highlightedHexKeys = new Set(keys);
+        App._pendingColorEdit = {
+          panelIdx,
+          countryId: cid,
+          color: (getCountryColorOverride(panelIdx, cid)?.color) || '#6495ED'
+        };
+        App.lastSelectionKind = 'country-preview';
+        updateHexStyles();
+        return;
+      }
     }
-
-
-    // ★★★ 非 Alt 点击：先把“Alt 整国着色”关掉（仅关视觉聚焦，不清你的颜色记录）
-    // clearAltFocusForPanelOnNormalClick(panelIdx);
-    degradeFocusToOutlineFor(panelIdx);
-
-    
-
-// —— Clear previous ALT block selection on first normal click ——
-if (App._forceSingleNextClick || App.lastSelectionKind === 'conflict' || App.lastSelectionKind === 'country') {
-  App._forceSingleNextClick = false;
-  try { App.persistentHexKeys && App.persistentHexKeys.clear(); } catch(e){}
-  try { App.selectedRouteIds && App.selectedRouteIds.clear(); } catch(e){}
-  try { App.excludedHexKeys && App.excludedHexKeys.clear(); } catch(e){}
-  try { App.highlightedHexKeys && App.highlightedHexKeys.clear(); } catch(e){}
-  App.selectedHex = null;
-  if (App.panelConflictColors instanceof Map) {
-    // Remove conflict paint cache for this panel to revert to MSU-driven base
-    App.panelConflictColors.delete(panelIdx);
   }
-  App.lastSelectionKind = null;
+
+  // --- Normal click: reset selection to {center + its direct neighbors} ---
+  // Clear any pending preview
+  App._pendingConflictEdit = null;
+  App._pendingColorEdit = null;
+  if (App.highlightedHexKeys) App.highlightedHexKeys.clear();
+
+  const adj = buildUndirectedAdjacency(); // Map(key -> Set(key))
+  const nbrs = adj.get(k) || new Set();
+
+  App.persistentHexKeys.clear();
+  App.selectedEdgeKeys?.clear?.();
+
+  App.persistentHexKeys.add(k);
+  const centerQR = `${q},${r}`;
+  nbrs.forEach(nb => {
+    App.persistentHexKeys.add(nb);
+    const [, qr] = nb.split('|');
+    const [q2, r2] = qr.split(',').map(Number);
+    const a = centerQR;
+    const b = `${q2},${r2}`;
+    const [u,v] = (a < b) ? [a,b] : [b,a];
+    App.selectedEdgeKeys.add(`${panelIdx}|${u}|${v}`);
+  });
+
+  App.selectedHex = { panelIdx, q, r };
+  App.lastSelectionKind = 'single-neighborhood';
+  emitSelectionPayload?.();
   updateHexStyles();
-  // continue to handle this click normally (group/route/connect), don't return here
+  publishToStepAnalysis?.();
+  return;
+
 }
 
-// —— Connect Active：插入模式优先（含“等待锚点”的绿灯）——————————————
-    if (App.insertMode) {
-      // 4.1 还没有锚点：先确定锚点所在的路线与 index
-      if (App.insertMode.awaitingAnchor) {
-        // 先优先在“已选路线”中找，找不到再在全部路线中找
-        let route = findSelectedRouteContaining(panelIdx, q, r);
-        if (!route) {
-          route = (App._lastLinks || []).find(l => isSelectableRoute(l) && linkContainsNode(l, panelIdx, q, r));
-          if (route) App.selectedRouteIds.add(linkKey(route)); // 若没选过该路，则顺带选中它
-        }
-        if (route) {
-          const idx = indexOfPointInLink(route, panelIdx, q, r);
-          if (idx >= 0) {
-            App.insertMode.routeId = linkKey(route);
-            App.insertMode.anchorIndex = idx;
-            App.insertMode.awaitingAnchor = false;
-            App.selectedHex = { panelIdx, q, r };
-            recomputePersistentFromRoutes();
 
-            App.lastSelectionKind = 'route';
-
-            updateHexStyles();
-            ModeUI.computeAndApply();
-            return; // 锚点确定后，下一次点击再走“添加/结束”
-          }
-        }
-        // 点击不在任何路线节点上：不处理，回退到后续模式（比如 Route/Group）
-        // 不 return
-      }
-
-      // 4.2 已有 routeId（真正的插入过程）
-      const link = findLinkById(App.insertMode.routeId);
-      if (!link) {
-        App.insertMode = null; // 安全兜底
-      } else {
-        const isEndpoint =
-          indexOfPointInLink(link, panelIdx, q, r) === 0 ||
-          indexOfPointInLink(link, panelIdx, q, r) === link.path.length - 1;
-
-        // 添加点：Shift 或 黄灯（armed）都能加
-        if (armed && !isEndpoint) {
-          insertPointAfter(link, App.insertMode.anchorIndex, panelIdx, q, r);
-          drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
-          recomputePersistentFromRoutes();
-          App.highlightedHexKeys.clear();
-          App.hoveredHex = null;
-          updateHexStyles();
-          publishToStepAnalysis();
-          return;
-        }
-        // 结束：Ctrl+Shift 点到终点，或“按钮黄灯”下点到终点
-        if ((withCtrl && withShift && isEndpoint) || (App.uiPref.connectArmed && isEndpoint)) {
-          endInsertMode(true);
-          return;
-        }
-        // 其余落空：不 return，让后续 Route/Group 还能工作（例如误点到别的地方）
-      }
-    }
-
-    // —— Connect Armed（黄灯）：未进入 active 时，点击路线节点 = 开始插入 —— //
-    if (armed && !isConnectActive()) {
-      let route = findSelectedRouteContaining(panelIdx, q, r);
-      if (!route) {
-        route = (App._lastLinks || []).find(l => isSelectableRoute(l) && linkContainsNode(l, panelIdx, q, r));
-        if (route) App.selectedRouteIds.add(linkKey(route));
-      }
-      if (route) {
-        const idx = indexOfPointInLink(route, panelIdx, q, r);
-        if (idx >= 0) {
-          beginInsertMode(route, idx);
-
-          App.lastSelectionKind = 'connect';  
-
-          App.selectedHex = { panelIdx, q, r };
-          recomputePersistentFromRoutes();
-          updateHexStyles();
-          return;
-        }
-      }
-      // armed 但没点在路线节点上 → 忽略，让后续 Route/Group 执行
-    }
-
-    // —— Route 模式（键盘 Ctrl/⌘ 或 按钮 Route 绿灯）———————————————
-    if (routeMode) {
-      const key = pkey(panelIdx, q, r);
-      let needsRecompute = false;  // 只有涉及“整条线路”时才重算
-
-      if (App.persistentHexKeys.has(key)) {
-        // 已选 → 标记为排除（仅当存在路线选择时才需要重算）
-        App.excludedHexKeys.add(key);
-        App.persistentHexKeys.delete(key);
-        needsRecompute = (App.selectedRouteIds.size > 0);
-      } else {
-        let addedRoute = false;
-
-        // 规则一：优先选“以该点为起点”的所有线路
-        (App._lastLinks || []).forEach(link => {
-          if (!isSelectableRoute(link)) return;
-          if (isStartOfLink(link, panelIdx, q, r)) {
-            App.selectedRouteIds.add(linkKey(link));
-            addedRoute = true;
-          }
-        });
-
-        // 规则二：否则，选中所有“包含该点”的线路
-        if (!addedRoute) {
-          (App._lastLinks || []).forEach(link => {
-            if (!isSelectableRoute(link)) return;
-            if (linkContainsNode(link, panelIdx, q, r)) {
-              App.selectedRouteIds.add(linkKey(link));
-              addedRoute = true;
-            }
-          });
-        }
-
-        // 规则三（兜底）：如果数据里根本没有命中任何线路，至少选中“当前点”
-        App.excludedHexKeys.delete(key);
-        if (addedRoute) {
-          needsRecompute = true;
-        } else {
-          // 兜底直接落到节点集合，不重算（避免被清空）
-          App.persistentHexKeys.add(key);
-        }
-      }
-
-      if (needsRecompute) {
-        recomputePersistentFromRoutes();
-      }
-
-      App.selectedHex = { panelIdx, q, r };
-      drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
-      App.highlightedHexKeys.clear();
-      App.hoveredHex = null;
-      updateHexStyles();
-      publishToStepAnalysis();
-      return;
-    }
-
-    // —— Group 模式（默认）———————————————————————————————
-    if (App.persistentHexKeys.has(k)) {
-      deselectComponent(panelIdx, q, r);
-      if (App.selectedHex?.panelIdx === panelIdx && App.selectedHex.q === q && App.selectedHex.r === r) {
-        App.selectedHex = null;
-      }
-    } else {
-      selectComponent(panelIdx, q, r);
-      App.selectedHex = { panelIdx, q, r };
-    }
-    App.highlightedHexKeys.clear();
-    App.hoveredHex = null;
-
-    App.lastSelectionKind = 'group';
-
-    updateHexStyles();
-    publishToStepAnalysis();
-  }
  
   
   function handleDoubleClick(panelIdx, q, r, event) {
@@ -4276,36 +4141,68 @@ export function destroySemanticMap(cleanup) {
 }
 
 
-
-
 /* === Spotlight: fade unrelated hexes when a selection exists === */
 function applySpotlight(panelIdx) {
+
   try {
-    const spotlightOn = !!(App.persistentHexKeys && App.persistentHexKeys.size > 0);
-    if (!spotlightOn) return;
-    const svg = App.subspaceSvgs?.[panelIdx];
+    const A = (typeof App!=='undefined' && App) || (typeof window!=='undefined' && window.App) || (typeof globalThis!=='undefined' && globalThis.App) || {};
+    const S = (typeof STYLE!=='undefined' && STYLE) || {};
+    const svg = A.subspaceSvgs ? A.subspaceSvgs[panelIdx] : null;
     if (!svg) return;
+
+    const hasPersistent = !!(A.persistentHexKeys && A.persistentHexKeys.size > 0);
+    const hasPreview    = !!(A.highlightedHexKeys && A.highlightedHexKeys.size > 0);
+    const spotlightOn   = hasPersistent || hasPreview;
+    if (!spotlightOn) return;
+
     svg.selectAll('g.hex').each(function(d) {
       const gSel = d3.select(this);
       const path = gSel.select('path');
-      const hatch = gSel.select('.hatch, pattern, defs'); // best-effort
-      const key = `${panelIdx}|${d.q},${d.r}`;
-      const inSpotlight = !!App.persistentHexKeys?.has?.(key);
-      if (!inSpotlight) {
-        // force fallback base gray if available; else keep current fill but fade heavily
-        const baseGray = (STYLE?.HEX_FILL_TEXT || '#DCDCDC');
+      const key  = `${panelIdx}|${d.q},${d.r}`;
+      const inSpot = !!( (hasPersistent && A.persistentHexKeys.has(key)) || (hasPreview && A.highlightedHexKeys.has(key)) );
+
+      if (!inSpot) {
+        const baseGray = (S.HEX_FILL_TEXT || S.HEX_FILL_DEFAULT || '#DCDCDC');
+        const fade = (typeof S.OPACITY_ALT_FADE === 'number') ? S.OPACITY_ALT_FADE : 0.08;
         path.attr('fill', baseGray);
-        // OPACITY_ALT_FADE: define or fallback to 0.08
-        const fade = (STYLE && typeof STYLE.OPACITY_ALT_FADE === 'number') ? STYLE.OPACITY_ALT_FADE : 0.08;
         path.attr('fill-opacity', fade);
         path.attr('stroke-opacity', 0);
-        if (!hatch.empty()) {
-          hatch.attr('fill', 'none');
+      } else {
+        if (A._pendingConflictEdit) {
+          const w = (S.HEX_BORDER_WIDTH || 1.2) * 1.6;
+          path.attr('stroke-opacity', 1).attr('stroke-width', w);
         }
       }
     });
+
+    // Optional edges
+    svg.selectAll('path.edge').attr('opacity', function(){
+      const id = d3.select(this).attr('data-edge-key');
+      return (A.selectedEdgeKeys && A.selectedEdgeKeys.has(id)) ? 1 : 0.05;
+    });
   } catch (e) {
-    console.warn('[applySpotlight] error:', e);
+    try { console.warn('[applySpotlight] error:', e); } catch(_){}
   }
+
 }
 
+
+
+// === Global contextmenu: confirm color when Alt preview is active (guarded) ===
+// @semanticmap_contextmenu_guard
+(function(){
+  if (typeof document === 'undefined') return;
+  document.addEventListener('contextmenu', function(e){
+    try {
+      const A = (typeof App!=='undefined' && App) || (typeof window!=='undefined' && window.App) || (typeof globalThis!=='undefined' && globalThis.App);
+      if (!A) return;
+      if (A._pendingConflictEdit || A._pendingColorEdit) {
+        e.preventDefault();
+        if (typeof showColorMenu === 'function') {
+          const init = (A._pendingConflictEdit?.color) || (A._pendingColorEdit?.color) || '#A9D08D';
+          showColorMenu(e.clientX||0, e.clientY||0, init);
+        }
+      }
+    } catch(err){ try{console.warn(err);}catch(_){ } }
+  }, { capture: true });
+})();
