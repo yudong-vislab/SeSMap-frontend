@@ -243,6 +243,9 @@ export async function initSemanticMap({
     altIsolatedPanels: new Set(),     // 被隔离 Alt 聚焦的面板索引集合（复制面板会加入）
     panelFocusOverrides: new Map(),   // panelIdx -> { countryId, mode: 'filled'|'outline' }
 
+    // ★ 新增：全局（跨子空间）国家颜色表 + 开关
+    globalCountryColors: new Map(),  // Map<normalizedCountryId, "#RRGGBB">
+    syncCountryColorAcrossPanels: true, // 打开后，任何一次给某国设色，会同步到全部子空间
 
   };
 
@@ -297,6 +300,25 @@ export async function initSemanticMap({
     if (typeof updateHexStyles === 'function') {
       updateHexStyles();
     }
+  }
+
+    // ---- helpers: country keys / conflict keys 统一出口 ----
+  function getConflictKeysForCountry(panelIdx, countryId) {
+    const cid = normalizeCountryId(countryId);
+    const conflicts = App.conflictHexKeysByPanel?.[panelIdx]; // 假设已存在的结构：Map<stringCountryId, Set<hexKey>> 或等价
+    if (!conflicts || !conflicts.get) return new Set();
+    return new Set(conflicts.get(cid) || []);
+  }
+ 
+  // 约定：includeConflicts = true 用于 Hover 预览；false 用于 Click 应用/上色
+  function getCountryKeysFiltered(panelIdx, countryId, includeConflicts = false) {
+    const cid = normalizeCountryId(countryId);
+    const allKeys = new Set(getCountryKeysInPanel(panelIdx, cid)); // 你原有函数，返回该面板该国家的全量 hexKey
+    if (includeConflicts) return allKeys;
+    const conflictKeys = getConflictKeysForCountry(panelIdx, cid);
+    // 差集：去掉冲突区
+    conflictKeys.forEach(k => allKeys.delete(k));
+    return allKeys;
   }
 
   // === helpers for click payload (full multi-country data) ===
@@ -399,17 +421,29 @@ function buildSingleBucket(panelIdx, q, r, hex) {
 }
 
 // === Color helpers ===
-function getPanelCountryColor(panelIdx, cid) {
-  try { cid = normalizeCountryId(cid); } catch(e) {}
-  const panelMap = App.panelCountryColors && App.panelCountryColors.get ? App.panelCountryColors.get(panelIdx) : null;
-  const rec = panelMap && panelMap.get ? panelMap.get(cid) : null;
-  if (rec && rec.color) return rec.color;
+function getPanelCountryColor(panelIdx, cidRaw) {
+  let cid = cidRaw;
+  try { cid = normalizeCountryId(cidRaw); } catch(e) {}
+
+  // 1) 面板内覆盖优先
+  const panelMap = App.panelCountryColors?.get?.(panelIdx);
+  const rec = panelMap?.get?.(cid);
+  if (rec?.color) return rec.color;
+
+  // 2) ★ 新增：全局（跨面板）颜色兜底
+  const g = App.globalCountryColors?.get?.(cid);
+  if (g) return g;
+
+  // 3) 旧的“getCountryColorOverride(panelIdx, cid)”兜底（如果你保留了它）
   if (typeof getCountryColorOverride === 'function') {
     const tmp = getCountryColorOverride(panelIdx, cid);
-    if (tmp && tmp.color) return tmp.color;
+    if (tmp?.color) return tmp.color;
   }
-  return (App.config && App.config.countryBorder && App.config.countryBorder.color) || '#999';
+
+  // 4) 最后回退
+  return (App.config?.countryBorder?.color) || '#999';
 }
+
 
 // === Base fill logic: single-country = that country's color; conflict = gray; none = modality fallback ===
 function computeHexBaseFill(panelIdx, q, r, modality) {
@@ -1302,7 +1336,62 @@ function _normCid(cid) {
   } catch { return cid; }
 }
 
-// —— 覆盖色：写入 —— //
+// ★ 新增：为“某面板 + 某国家”的全部 hex 重建 alphaMap（遵循你现有的 MSU → 透明度逻辑）
+function buildAlphaMapForPanelCountry(panelIdx, countryId) {
+  const cid = normalizeCountryId(countryId);
+  const keys = getCountryKeysInPanel(panelIdx, cid); // Set<"p|q,r">
+  // 关键：排除该国参与的冲突 hex
+  const conflict = (typeof getConflictKeysForCountryInPanel === 'function')
+    ? getConflictKeysForCountryInPanel(panelIdx, cid)
+    : new Set();
+
+  const alphaMap = new Map();
+  for (const k of keys) {
+    if (conflict.has(k)) continue; // 跳过冲突 hex
+    const a =
+      (App.msuAlphaByHex?.get?.(k)) ??
+      (App.alphaCacheByHex?.get?.(k)) ??
+      STYLE.OPACITY_DEFAULT;
+    alphaMap.set(k, a);
+  }
+  return alphaMap;
+}
+
+
+// ★ 新增：把某个国家的颜色同步到所有子空间
+function propagateCountryColorToAllPanels(countryId, color) {
+  const cid = normalizeCountryId(countryId);
+
+  // 1) 记录到全局颜色表（供渲染兜底）
+  App.globalCountryColors.set(cid, color);
+
+  // 2) 写入每个面板的 panelCountryColors，并重建 alphaMap（按该面板的 MSU 分布）
+  if (!App.panelCountryColors) App.panelCountryColors = new Map();
+
+  (App.countryKeysByPanel || []).forEach((m, panelIdx) => {
+    if (!m) return; // 该面板内可能没有任何国家
+    let perPanel = App.panelCountryColors.get(panelIdx);
+    if (!perPanel) {
+      perPanel = new Map();
+      App.panelCountryColors.set(panelIdx, perPanel);
+    }
+    const alphaByKey = buildAlphaMapForPanelCountry(panelIdx, cid);
+    perPanel.set(cid, { color, alphaByKey });
+
+    // （可选）与冲突色共存处理：把该国在该面板的 key 从“冲突覆盖”里摘掉，避免冲突色盖住国家色
+    const cov = App.panelConflictColors?.get?.(panelIdx);
+    if (cov?.alphaByKey instanceof Map) {
+      for (const k of alphaByKey.keys()) cov.alphaByKey.delete(k);
+      if (cov.alphaByKey.size === 0) App.panelConflictColors.delete(panelIdx);
+      else App.panelConflictColors.set(panelIdx, cov);
+    }
+  });
+
+  // 3) 刷新
+  if (typeof updateHexStyles === 'function') updateHexStyles();
+}
+
+
 // —— 覆盖色：写入（按 MSU → 透明度 基线为该国每个 hex 建立 alphaMap）——
 function setCountryColorOverride(panelIdx, countryId, color, alphaByKey) {
   if (!App.panelCountryColors) App.panelCountryColors = new Map();
@@ -1331,9 +1420,17 @@ function setCountryColorOverride(panelIdx, countryId, color, alphaByKey) {
 
   // —— 关键：为“该国在该面板里的所有 hex”构造每格透明度 —— //
   // 规则：优先用 “MSU 基线” -> 没有就用 “渲染时的最终透明度缓存” -> 再没有用默认
+  // —— 关键：为“该国在该面板里的所有 hex”构造每格透明度 —— //
   const alphaMap = new Map();
-  const allKeys = getCountryKeysInPanel(panelIdx, _normCid(countryId)); // Set<"p|q,r">
+  const cidNorm = _normCid(countryId);
+  const allKeys = getCountryKeysInPanel(panelIdx, cidNorm); // Set<"p|q,r">
+  // 关键：排除该国参与的冲突 hex
+  const conflict = (typeof getConflictKeysForCountryInPanel === 'function')
+    ? getConflictKeysForCountryInPanel(panelIdx, cidNorm)
+    : new Set();
+
   allKeys.forEach(k => {
+    if (conflict.has(k)) return; // 跳过冲突 hex
     const a =
       (App.msuAlphaByHex?.get?.(k)) ??
       (App.alphaCacheByHex?.get?.(k)) ??
@@ -1342,7 +1439,14 @@ function setCountryColorOverride(panelIdx, countryId, color, alphaByKey) {
     alphaMap.set(k, a);
   });
 
+
   perPanel.set(cid, { color, alphaByKey: alphaMap });
+
+  // ★ 可选追加：保证调用 setCountryColorOverride 也能全局同步
+  if (App.syncCountryColorAcrossPanels) {
+    propagateCountryColorToAllPanels(countryId, color);
+  }
+
 }
 
 
@@ -1360,7 +1464,12 @@ function getCountryColorOverride(panelIdx, countryId) {
 function buildAlphaRampFor(panelIdx, countryId) {
   const cid = normalizeCountryId(countryId);
   const keys = getCountryKeysInPanel(panelIdx, cid); // Set<"p|q,r">
-  const arr = Array.from(keys).map(k => {
+  const conflict = (typeof getConflictKeysForCountryInPanel === 'function')
+    ? getConflictKeysForCountryInPanel(panelIdx, cid)
+    : new Set();
+  const filtered = Array.from(keys).filter(k => !conflict.has(k));
+
+  const arr = filtered.map(k => {
     const [pStr, qr] = k.split('|');
     const [qs, rs] = qr.split(',');
     const p = +pStr, q = +qs, r = +rs;
@@ -1458,7 +1567,13 @@ function ensureColorMenu() {
       setConflictColorOverride(pendC.panelIdx, chosen, pendC.alphaByKey);
     }
     if (pendN && chosen) {
+      // 1) 原面板先落一份（不破坏你原来的 per-panel 行为）
       setCountryColorOverride(pendN.panelIdx, pendN.countryId, chosen, pendN.alphaByKey);
+
+      // 2) ★ 新增：跨子空间同步
+      if (App.syncCountryColorAcrossPanels) {
+        propagateCountryColorToAllPanels(pendN.countryId, chosen);
+      }
     }
 
     App._pendingConflictEdit = null;
@@ -1743,7 +1858,7 @@ function hideHexTooltip() {
 
   function computeHoverOrCountryPreview(panelIdx, q, r, { withCtrl=false, withShift=false, withAlt=false } = {}) {
     if (withAlt) {
-  App._forceSingleNextClick = true;
+      App._forceSingleNextClick = true;
       // 判定当前格是否冲突：同一 (q,r) 存在多个国家
       const bucket = getBucket(panelIdx, q, r);
       const isConflict = !!(bucket && bucket.countries && bucket.countries.size > 1);
@@ -3050,8 +3165,12 @@ function updateHexStyles() {
 
       // —— 覆盖色（国家） —— //
       const countryOv = thisCid ? getCountryColorOverride(panelIdx, thisCid) : null;
-      const confirmedCountryColor = countryOv?.color || null;
       const confirmedCountryAlphaMap = countryOv?.alphaByKey || null;
+      const confirmedCountryColor =
+        (countryOv?.color && confirmedCountryAlphaMap?.has?.(key))
+          ? countryOv.color
+          : null;
+      
 
       // —— 预览（国家） —— //
       let previewColor = null;
@@ -3474,80 +3593,135 @@ function updateHexStyles() {
     }
   }
 
-
-  function handleSingleClick(panelIdx, q, r, withCtrl = false, withShift = false) {
-
-  const k = pkey(panelIdx, q, r);
-
-  // --- Alt: PREVIEW ONLY ---
-  if (App.modKeys && App.modKeys.alt) {
-    const conflict = isConflictHex(panelIdx, q, r);
-    if (conflict) {
-      const ramp = buildConflictAlphaRampFor(panelIdx); // { keys:Set, alphaByKey:Map }
-      App.highlightedHexKeys = new Set(ramp.keys);
-      App._pendingConflictEdit = {
-        panelIdx,
-        keys: new Set(ramp.keys), // 添加 keys
-        color: (getConflictColorOverride(panelIdx)?.color),
-        alphaByKey: ramp.alphaByKey
-      };
-      App.lastSelectionKind = 'conflict-preview';
-      updateHexStyles();
-      return;
-    } else {
-      // Alt on a country cell => preview entire country (border emphasis), not recolor
-      const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${q},${r}`);
-      const cid = hex?.country_id ? normalizeCountryId(hex.country_id) : null;
-      if (cid) {
-        const keys = getCountryKeysInPanel(panelIdx, cid);
-        App.highlightedHexKeys = new Set(keys);
-        App._pendingColorEdit = {
-          panelIdx,
-          countryId: cid,
-          color: (getCountryColorOverride(panelIdx, cid)?.color) || '#6495ED'
-        };
-        App.lastSelectionKind = 'country-preview';
-        updateHexStyles();
-        return;
-      }
-    }
+  // —— 小工具：构造“中心点+邻居”的 key 集 —— //
+  function buildNeighborhood(panelIdx, q, r) {
+    const centerKey = pkey(panelIdx, q, r);
+    const adj = buildUndirectedAdjacency();      // Map(key -> Set(key))
+    const nbrs = adj.get(centerKey) || new Set();
+    const set = new Set([centerKey]);
+    nbrs.forEach(k => set.add(k));
+    return { centerKey, set, neighbors: nbrs };
   }
 
-  // --- Normal click: reset selection to {center + its direct neighbors} ---
-  // Clear any pending preview
-  App._pendingConflictEdit = null;
-  App._pendingColorEdit = null;
-  if (App.highlightedHexKeys) App.highlightedHexKeys.clear();
+  // —— 小工具：无向边 key —— //
+  function undirectedEdgeKey(panelIdx, q1, r1, q2, r2) {
+    const a = `${q1},${r1}`, b = `${q2},${r2}`;
+    const [u, v] = (a < b) ? [a, b] : [b, a];
+    return `${panelIdx}|${u}|${v}`;
+  }
 
-  const adj = buildUndirectedAdjacency(); // Map(key -> Set(key))
-  const nbrs = adj.get(k) || new Set();
+  // —— 小工具：对“中心点与邻居”的边集合做增删（toggle=false=覆盖式添加；true=切换） —— //
+  function upsertNeighborhoodEdges(panelIdx, q, r, neighborsSet, { toggle=false } = {}) {
+    if (!App.selectedEdgeKeys) App.selectedEdgeKeys = new Set();
+    neighborsSet.forEach(nb => {
+      if (typeof nb !== 'string') return;
+      const parts = nb.split('|')[1]; // "q,r"
+      if (!parts) return;
+      const [q2, r2] = parts.split(',').map(Number);
+      if (q2 === q && r2 === r) return;
+      const ek = undirectedEdgeKey(panelIdx, q, r, q2, r2);
+      if (toggle) {
+        if (App.selectedEdgeKeys.has(ek)) App.selectedEdgeKeys.delete(ek);
+        else App.selectedEdgeKeys.add(ek);
+      } else {
+        App.selectedEdgeKeys.add(ek);
+      }
+    });
+  }
 
-  App.persistentHexKeys.clear();
-  App.selectedEdgeKeys?.clear?.();
+  // —— 修正后的唯一点击处理 —— //
+  function handleSingleClick(panelIdx, q, r, withCtrl = false, withShift = false) {
+    const k = pkey(panelIdx, q, r);
 
-  App.persistentHexKeys.add(k);
-  const centerQR = `${q},${r}`;
-  nbrs.forEach(nb => {
-    App.persistentHexKeys.add(nb);
-    const [, qr] = nb.split('|');
-    const [q2, r2] = qr.split(',').map(Number);
-    const a = centerQR;
-    const b = `${q2},${r2}`;
-    const [u,v] = (a < b) ? [a,b] : [b,a];
-    App.selectedEdgeKeys.add(`${panelIdx}|${u}|${v}`);
-  });
+    // -------- Alt：只“预览”冲突块或整国，不进入选集，也不 emit --------
+    if (App.modKeys && App.modKeys.alt) {
+      const conflict = isConflictHex(panelIdx, q, r);
+      // 清除任何待上色状态
+      App._pendingConflictEdit = null;
+      App._pendingColorEdit = null;
+      if (App.highlightedHexKeys) App.highlightedHexKeys.clear();
 
-  App.selectedHex = { panelIdx, q, r };
-  App.lastSelectionKind = 'single-neighborhood';
-  emitSelectionPayload?.();
-  updateHexStyles();
-  publishToStepAnalysis?.();
-  return;
-
-}
-
-
+      if (conflict) {
+        const ramp = buildConflictAlphaRampFor(panelIdx);  // { keys:Set, alphaByKey:Map }
+        App.highlightedHexKeys = new Set(ramp.keys);
+        App._pendingConflictEdit = {
+          panelIdx,
+          keys: new Set(ramp.keys),                 // 仅用于右键“确认上色”
+          color: getConflictColorOverride(panelIdx)?.color || null,
+          alphaByKey: ramp.alphaByKey               // 预览透明度仍按 MSU 逻辑
+        };
+        App.lastSelectionKind = 'conflict-preview';
+        updateHexStyles();
+        return; // ← 不改 persistent、不 emit
+      } else {
+        // Alt 点击普通国家格：只把整国放入“高亮预览”，用于右键确认上色
+        const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${q},${r}`);
+        const cid = hex?.country_id ? normalizeCountryId(hex.country_id) : null;
+        if (cid) {
+          // 差集：国家 - 冲突区（保证 Alt Click 后的“高亮/上色集合”与右键逻辑一致）
+           const all = getCountryKeysInPanel(panelIdx, cid);
+           const conflicts = getConflictKeysForCountryInPanel(panelIdx, cid);
+           const filteredKeys = new Set([...all].filter(k => !conflicts.has(k)));
  
+           App.highlightedHexKeys = new Set(filteredKeys);
+           App._pendingColorEdit = {
+             panelIdx,
+             keys: new Set(filteredKeys),
+             color: getCountryColorOverride(panelIdx, cid)?.color || null,
+             alphaByKey: buildAlphaMapForPanelCountry(panelIdx, cid) // 该函数内部本就排冲突；保留用于透明度分配
+           };
+
+          App.lastSelectionKind = 'country-preview';
+          updateHexStyles();
+          return; // ← 同样不改 persistent、不 emit
+        }
+      }
+    }
+
+    // 普通点击前：轻量降级 Alt 聚焦（不动你的上色记录）
+    degradeFocusToOutlineFor(panelIdx);
+
+    // 清掉“预览”态
+    App._pendingConflictEdit = null;
+    App._pendingColorEdit = null;
+    if (App.highlightedHexKeys) App.highlightedHexKeys.clear?.();
+
+    // 计算“中心点+邻居”
+    const { centerKey, set: nhSet, neighbors } = buildNeighborhood(panelIdx, q, r);
+
+    // —— Ctrl：集合“切换/叠加”；非 Ctrl：重置为这个邻域 —— //
+    if (withCtrl || App.modKeys?.ctrl || App.modKeys?.meta) {
+      // 判定这组点是否“都在选集里”
+      let allIn = true;
+      nhSet.forEach(x => { if (!App.persistentHexKeys.has(x)) allIn = false; });
+
+      if (allIn) {
+        // => 整组移除
+        nhSet.forEach(x => App.persistentHexKeys.delete(x));
+        upsertNeighborhoodEdges(panelIdx, q, r, nhSet, { toggle:true });
+      } else {
+        // => 整组加入
+        nhSet.forEach(x => App.persistentHexKeys.add(x));
+        upsertNeighborhoodEdges(panelIdx, q, r, nhSet, { toggle:true });
+      }
+      App.selectedHex = { panelIdx, q, r };
+      App.lastSelectionKind = 'multi-toggle';
+    } else {
+      // 非 Ctrl：重置为“这个点 + 它的邻居”
+      App.persistentHexKeys.clear();
+      App.selectedEdgeKeys?.clear?.();
+      nhSet.forEach(x => App.persistentHexKeys.add(x));
+      upsertNeighborhoodEdges(panelIdx, q, r, nhSet, { toggle:false });
+      App.selectedHex = { panelIdx, q, r };
+      App.lastSelectionKind = 'single-neighborhood';
+    }
+
+    // 统一刷新/抛数
+    emitSelectionPayload?.();          // nodes/edges/kind
+    updateHexStyles();
+    publishToStepAnalysis?.();
+  }
+
   
   function handleDoubleClick(panelIdx, q, r, event) {
     const here = { panelIdx, q, r };
