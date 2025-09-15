@@ -1920,10 +1920,11 @@ function hideHexTooltip() {
     const btnSel   = document.getElementById('mode-btn-select');
     const btnRoute = document.getElementById('mode-btn-route');
     const btnConn  = document.getElementById('mode-btn-insert'); // Connect
+    const btnAlt   = document.getElementById('mode-btn-alt');     // Alt / Option
 
     // 统一清理三个按钮的状态类
     function clearAll() {
-      [btnSel, btnRoute, btnConn].forEach(b => {
+      [btnSel, btnRoute, btnConn, btnAlt].forEach(b => {
         if (!b) return;
         b.classList.remove('is-active', 'is-armed');
       });
@@ -1935,7 +1936,7 @@ function hideHexTooltip() {
       App.uiPref.connectArmed = false;
       App.insertMode = null;
       App.flightStart = null;
-      App.modKeys = { ctrl:false, meta:false, shift:false };
+      App.modKeys = { ...(App.modKeys||{}), ctrl:false, meta:false, shift:false, alt:false };
 
       // ★ 新增：彻底清理悬停预览与路线/排除态，避免回到 Group 后残影
       App.selectedRouteIds.clear();
@@ -1950,6 +1951,53 @@ function hideHexTooltip() {
       // 显示：Group 按钮绿；行为：单击走 Group 选择
       computeAndApply({ ctrl:false, meta:false, shift:false });
     }
+
+    // —— Alt/Option 开关 —— //
+    function setAlt(val) {
+      App.modKeys = { ...(App.modKeys||{}), alt: !!val };
+      if (val) {
+        // Alt 独占：关掉 Route / Connect / 其它修饰键
+        App.uiPref && (App.uiPref.route = false);
+        App.uiPref && (App.uiPref.connectArmed = false);
+        App.insertMode = null;
+        App.modKeys.ctrl = false;
+        App.modKeys.meta = false;
+        App.modKeys.shift = false;
+      }
+      // 可选：若 Alt 会影响即时上色（如“灰化非选中”），这里顺手刷新
+      updateHexStyles?.();
+      publishToStepAnalysis?.();
+
+      // 更新按钮视觉
+      const connectActive = !!App.insertMode;
+      const connectArmed  = isConnectArmedNow(App.modKeys.ctrl, App.modKeys.shift);
+      const routeActive   = isRouteMode(App.modKeys.ctrl || App.modKeys.meta);
+      setVisualState({ connectActive, connectArmed, routeActive, altActive: !!App.modKeys.alt });
+
+    }
+    function toggleAlt() { setAlt(!(App.modKeys && App.modKeys.alt)); }
+
+    // 绑定按钮点击
+    btnAlt?.addEventListener?.('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleAlt();
+    });
+
+    // 选中/多选按钮被点击时，关闭 Alt 以保持互斥
+    btnSel?.addEventListener?.('click', () => setAlt(false));
+    btnRoute?.addEventListener?.('click', () => setAlt(false));
+
+    // 键盘监听（mac 上 Option 就是 Alt）
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Alt' || e.altKey) setAlt(true);
+      // if (e.ctrlKey || e.metaKey) setAlt(false); // 按下 Ctrl/⌘ 时互斥关闭 Alt
+    }, { passive: true });
+    window.addEventListener('keyup', (e) => {
+      if (e.key === 'Alt' || !e.altKey) setAlt(false);
+    }, { passive: true });
+    window.addEventListener('blur', () => setAlt(false));
+
 
     // 路线的可见点（已被排除的点不参与高亮/预览）
     function visiblePathKeys(link) {
@@ -2059,7 +2107,8 @@ function hideHexTooltip() {
      *  - routeActive：Ctrl/⌘ 按下（且不在 connect 状态）
      *  - 其余默认：Cluster Select 绿色
      */
-    function setVisualState({ connectActive=false, connectArmed=false, routeActive=false } = {}) {
+    function setVisualState({ connectActive=false, connectArmed=false, routeActive=false, altActive=false } = {}) {
+
       clearAll();
 
       // 默认 tooltip
@@ -2080,6 +2129,12 @@ function hideHexTooltip() {
       if (routeActive) {
         btnRoute?.classList.add('is-active');   // 绿
         if (btnRoute) btnRoute.title = TIPS.routeActive;
+        return;
+      }
+      // Alt / Option 模式的提示（保持整齐：只高亮按钮，不改变默认 Group 的逻辑）
+      if (altActive) {
+        btnAlt?.classList.add('is-active');     // 绿
+        if (btnAlt) btnAlt.title = 'Alt/Option mode';
         return;
       }
       btnSel?.classList.add('is-active');       // 绿（默认）
@@ -2105,7 +2160,9 @@ function hideHexTooltip() {
       // 允许“按钮绿灯 Route”在没有 Ctrl 的情况下保持绿色
       const routeActive  = !connectActive && !connectArmed && ( ctrlLike || App.uiPref.route );
 
-      setVisualState({ connectActive, connectArmed, routeActive });
+      const altActive = !!(App.modKeys && App.modKeys.alt);
+
+      setVisualState({ connectActive, connectArmed, routeActive, altActive });
 
       // ★ 模式视觉态变化后，如有悬停，刷新一次预览
       if (App.hoveredHex) {

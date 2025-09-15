@@ -81,9 +81,10 @@ function onSave() {
 
       <!-- 👇 模式按钮条（新增） -->
       <div class="mode-toolbar">
-        <button id="mode-btn-select" class="mode-btn" type="button" title="Select the connected route group">Group Select</button>
-        <button id="mode-btn-route"  class="mode-btn" type="button" title="Select an entire route (Ctrl/⌘)">Route Select</button>
-        <button id="mode-btn-insert" class="mode-btn" type="button" title="Arm Connect (Ctrl/⌘+Shift), then click to start">Connect</button>
+        <button id="mode-btn-select" class="mode-btn" type="button" title="Select Single HSU/Link">Single Select</button>
+        <button id="mode-btn-route"  class="mode-btn" type="button" title="Select Multiple HSUs/Links (Ctrl/⌘)">Multiple Select</button>
+        <button id="mode-btn-alt" class="mode-btn" type="button" title="Select Country/Conflict Area(Alt/Option)">Area Select</button>
+        <!-- <button id="mode-btn-insert" class="mode-btn" type="button" title="Arm Connect (Ctrl/⌘+Shift), then click to start">Connect</button> -->
       </div>
 
       <div class="mv-actions">
