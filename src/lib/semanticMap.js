@@ -219,6 +219,7 @@ export async function initSemanticMap({
     selectedRouteIds: new Set(),
     selectedEdgeKeys: new Set(),  // NEW: selected single-edge set (undirected keys)   // ★ 新增：当前被选中的“整条线路”的 id 集合（统计 road/river/flight）
     modKeys: { ctrl: false, meta: false, shift: false, alt: false },
+    _isConfirmingAltColor: false,
     _lastSnapshot: null,
     activeAltCountry: null,
 
@@ -1297,6 +1298,11 @@ function buildConflictAlphaRampFor(panelIdx) {
 
 // 写入/读取 冲突色
 function setConflictColorOverride(panelIdx, color, alphaByKey) {
+  
+  if (App?.modKeys?.alt && App?._pendingConflictEdit && !App._isConfirmingAltColor) {
+    // 未经确认：忽略任何写入请求（防外部监听或意外调用）
+    return;
+  }
   let alphaMap = new Map();
   if (alphaByKey instanceof Map) {
     alphaMap = new Map(
@@ -1394,6 +1400,10 @@ function propagateCountryColorToAllPanels(countryId, color) {
 
 // —— 覆盖色：写入（按 MSU → 透明度 基线为该国每个 hex 建立 alphaMap）——
 function setCountryColorOverride(panelIdx, countryId, color, alphaByKey) {
+  if (App?.modKeys?.alt && App?._pendingColorEdit && !App._isConfirmingAltColor) {
+    return;
+  }
+
   if (!App.panelCountryColors) App.panelCountryColors = new Map();
 
   let perPanel = App.panelCountryColors.get(panelIdx);
@@ -1555,6 +1565,7 @@ function ensureColorMenu() {
 
   // —— 确认：同时落盘冲突颜色 & 国家颜色 —— 
   menu.querySelector('#alt-color-confirm').addEventListener('click', () => {
+    App._isConfirmingAltColor = true;   
     const colorInp = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-input'));
     const colorHex = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-hex'));
     let chosen = (colorHex?.value || colorInp?.value || '').trim();
@@ -1564,7 +1575,9 @@ function ensureColorMenu() {
     const pendN = App._pendingColorEdit;
 
     if (pendC && chosen) {
+      App._isConfirmingAltColor = true;
       setConflictColorOverride(pendC.panelIdx, chosen, pendC.alphaByKey);
+      App._isConfirmingAltColor = false;
     }
     if (pendN && chosen) {
       // 1) 原面板先落一份（不破坏你原来的 per-panel 行为）
@@ -1575,7 +1588,7 @@ function ensureColorMenu() {
         propagateCountryColorToAllPanels(pendN.countryId, chosen);
       }
     }
-
+    App._isConfirmingAltColor = false;
     App._pendingConflictEdit = null;
     App._pendingColorEdit = null;
     hideColorMenu();
@@ -2526,7 +2539,7 @@ function hideHexTooltip() {
           App.excludedHexKeys.clear();
           App.persistentHexKeys.clear();
           App.highlightedHexKeys.clear();
-
+          emitSelectionPayload();
           drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
           App.hoveredHex = null;
           updateHexStyles();
@@ -2735,7 +2748,9 @@ function hideHexTooltip() {
               handleSingleClick(panelIdx, d.q, d.r, withCtrl, withShift);
             }, STYLE.CLICK_DELAY);
             // 统一：点击时抛出“该 hex 的完整（含多国）数据”
-             emitHexClick(panelIdx, d.q, d.r, d);
+            if (!(App.modKeys && App.modKeys.alt)) {      // ← Alt 流程：仅预览，不抛事件
+              emitHexClick(panelIdx, d.q, d.r, d);
+            }
 
           }).on('dblclick', (event, d) => {
             event.preventDefault(); event.stopPropagation();
@@ -2766,7 +2781,7 @@ function hideHexTooltip() {
                 App._pendingColorEdit = {
                   panelIdx,
                   countryId,
-                  color: getCountryColorOverride(panelIdx, countryId)?.color || pickRandomColor(`country:${panelIdx}:${String(countryId)}`),
+                  color: getCountryColorOverride(panelIdx, /*...*/ ) || pickRandomColor(`country:${panelIdx}:${String(countryId)}`),
                   keys,
                   alphaByKey
                 };
@@ -3171,7 +3186,6 @@ function updateHexStyles() {
           ? countryOv.color
           : null;
       
-
       // —— 预览（国家） —— //
       let previewColor = null;
       let previewAlpha = null;
@@ -3250,18 +3264,30 @@ function updateHexStyles() {
       let inPreview        = App.highlightedHexKeys.has(key);
       let isPreviewCenter  = inPreview && isHovered;
       let isPreviewNeighbor= inPreview && !isPreviewCenter;
+      // 若当前存在选中集，则所有“未选中”的格子统一压暗到非焦点透明度
+      if (App.persistentHexKeys && App.persistentHexKeys.size > 0 && !isSelected) {
+        // baseOpacity 是上面算好的“基底透明度”（MSU/覆盖/预览已经体现在 baseOpacity 里）
+        // 这里我们在它之上再做一道压暗
+        if (typeof baseOpacity === 'number') {
+          baseOpacity = Math.min(baseOpacity, STYLE.OPACITY_NONFOCUS);
+        }
+      }
 
       // 3) 交互叠加透明度（不要把有覆盖色的选中态硬拉到 1）
       let overlayOpacity = STYLE.OPACITY_DEFAULT;
-      if (isHovered || isFlightStart || isFlightHover) {
+      // 选中态优先于 hover/preview（但保留“有覆盖色不拉满”的规则）
+      if (isSelected) {
+        if (!previewColor && !confirmedCountryColor && !confirmedConflictColor && previewConflictColor == null) {
+          overlayOpacity = STYLE.OPACITY_SELECTED; // 只有在无覆盖色时才抬高
+        } else {
+          overlayOpacity = Math.max(overlayOpacity, STYLE.OPACITY_NEIGHBOR); // 有覆盖时也给点抬升
+        }
+      } else if (isHovered || isFlightStart || isFlightHover) {
         overlayOpacity = STYLE.OPACITY_HOVER;
       } else if (isPreviewCenter) {
         overlayOpacity = STYLE.OPACITY_PREVIEW_CENTER;
       } else if (isPreviewNeighbor) {
         overlayOpacity = STYLE.OPACITY_PREVIEW_NEIGHBOR;
-      } else if (isSelected && !previewColor && !confirmedCountryColor && !confirmedConflictColor && previewConflictColor == null) {
-        // 只有在没有覆盖色时，选中才抬高；有覆盖色时保持基线差异
-        overlayOpacity = STYLE.OPACITY_SELECTED;
       }
 
       let boost = Math.max(0, Math.min(1, overlayOpacity)); // overlayOpacity 改名更贴切也可
@@ -3282,9 +3308,13 @@ function updateHexStyles() {
       let strokeOpacity = conflictMode ? (isSelected ? STYLE.BORDER_ALT_ACTIVE : STYLE.BORDER_ALT_OTHER) : 1;
       let strokeWidth   = conflictMode ? (App.config.hex.borderWidth * (isSelected ? 1.6 : 1.0)) : App.config.hex.borderWidth;
       path.attr('stroke-opacity', strokeOpacity).attr('stroke-width', strokeWidth);
-  try { applySpotlight(panelIdx); } catch(e) { console.warn(e); }
+      // 普通选中态：在非冲突模式下也给边框加一点强调
+      if (!conflictMode && isSelected) {
+        path.attr('stroke-width', Math.max(Number(path.attr('stroke-width')) || App.config.hex.borderWidth, App.config.hex.borderWidth * 1.6));
+      }
+      try { applySpotlight(panelIdx); } catch(e) { console.warn(e); }
 
-    });
+      });
   });
 
   // —— 边界重绘（保持你的原逻辑）—— //
@@ -3715,7 +3745,8 @@ function updateHexStyles() {
       App.selectedHex = { panelIdx, q, r };
       App.lastSelectionKind = 'single-neighborhood';
     }
-
+    // 清掉临时 hover 预览，避免覆盖选中态视觉
+    App.highlightedHexKeys?.clear?.();
     // 统一刷新/抛数
     emitSelectionPayload?.();          // nodes/edges/kind
     updateHexStyles();
@@ -4245,9 +4276,9 @@ function exportMiniColorMaps() {
         if (App.selectedRouteIds && App.selectedRouteIds.size > 0) {
           snap = snapshotFromSelectedRoutes();
         } else {
-          const keySet = (App.highlightedHexKeys && App.highlightedHexKeys.size)
-            ? App.highlightedHexKeys
-            : App.persistentHexKeys;
+          const keySet = (App.persistentHexKeys && App.persistentHexKeys.size)
+            ? App.persistentHexKeys
+            : App.highlightedHexKeys;
           snap = snapshotFromKeySet(keySet || new Set());
         }
         const focusId = App.selectedHex
