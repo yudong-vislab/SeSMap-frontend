@@ -45,16 +45,20 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
 }
 
 // 新增：总结MSU句子的函数
-export async function summarizeMsuSentences(sentences) {
-  const prompt = `Please provide a concise and accurate summary based on the following academic text fragments. Requirements:
-1. Summarize core ideas and key information in English
-2. Keep within 50 words
-3. Highlight research focus and conclusions
-4. Avoid redundant descriptions
-Your result should be in the format of:
-{"Summary": "Your summary here"}
-
-Text content: ${sentences.join('\n')}`;
+ export async function summarizeMsuSentences(msuGroups) {
+   // msuGroups: [ { hsu: "113,-11", sentences: [ "MSU 214: ...", "MSU 540: ..." ] }, ... ]
+   const prompt = `You are given multiple scientific fragments grouped by HSU (Hierarchical Semantic Units).
+ Each HSU has multiple MSU sentences. Please summarize across all selected MSUs.
+ 
+ Requirements:
+ 1. Provide a concise summary in English (≤50 words).
+ 2. Highlight the main research contributions and conclusions.
+ 3. Respect grouping: ensure summary reflects differences between HSUs if necessary.
+ 4. Output format strictly in JSON:
+ {"Summary": "Your summary here"}
+ 
+ HSU Groups and Sentences:
+ ${msuGroups.map(g => `HSU ${g.hsu}:\n${g.sentences.join('\n')}`).join('\n\n')}`;
 
   try {
     const res = await fetch('/api/query', {

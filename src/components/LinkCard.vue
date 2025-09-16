@@ -7,39 +7,47 @@
       <span class="meta-names">{{ props.link.panelNames.join(' -> ') }}</span>
     </div>
 
-    <!-- ① Hex 概览 -->
-    <div class="subcard__hex">
-      <div class="hex-scroll">
-        <svg ref="svgRef" class="mini" />
-      </div>
-    </div>
+    <!-- ① Hex 概览 + Summarize 按钮（新增） -->
+    <!-- ① Hex 概览（按钮与 hex 同层，绝对定位到右侧，垂直居中） -->
+     <div class="subcard__hex">
+       <div class="hex-scroll">
+         <svg ref="svgRef" class="mini" />
+       </div>
+       <button
+         class="show-original-btn summarize-btn hex-action"
+         type="button"
+         :disabled="selectedCount === 0 || llmLoading"
+         @click="summarizeSelected"
+         title="Summarize checked MSUs in this link"
+       >
+         Summarize Selected<span v-if="selectedCount"> ({{ selectedCount }})</span>
+       </button>
+     </div>
 
-    <!-- ② 原文句子 - 显示当前link关联的MSU句子 -->
+
+    <!-- ② 原文句子 - 显示当前link关联的MSU句子（含勾选） -->
     <div class="subcard__source">
       <div v-if="linkMsuSentences.length > 0" class="msu-sentences">
-        <div v-for="(msu, index) in linkMsuSentences" :key="index" class="msu-sentence">
+        <div v-for="(msu, index) in linkMsuSentences" :key="msu.uid" class="msu-sentence">
           <div class="msu-meta">
             <label class="msu-checkwrap">
               <input
                 type="checkbox"
                 class="msu-check"
                 :aria-label="`Select MSU ${msu.id}`"
-                :checked="selectedMsus.has(msu.id)"
-                @change="toggleMsu(msu.id)"
+                :checked="selectedMsus.has(msu.uid)"
+                @change="toggleMsu(msu.uid)"
               />
               <span class="msu-id">MSU {{ msu.id }}</span>
             </label>
 
-            <button 
-              class="show-original-btn" 
-              @click="toggleOriginal"
-            >
+            <button class="show-original-btn" @click="toggleOriginal">
               {{ showOriginal ? 'Hide Details' : 'Show Details' }}
             </button>
           </div>
 
           <div class="msu-text">{{ msu.sentence }}</div>
-          
+
           <!-- 展开显示的para_info -->
           <div v-if="showOriginal && msu.para_info" class="para-info">
             <div class="para-info-content">{{ msu.para_info }}</div>
@@ -49,7 +57,7 @@
       <div v-else class="placeholder">No MSU sentences for this link</div>
     </div>
 
-    <!-- ③ 大模型总结 -->
+    <!-- ③ 大模型总结（展示点击按钮后的结果） -->
     <div class="subcard__llm">
       <div v-if="llmSummary" class="llm-content">
         {{ llmSummary }}
@@ -79,106 +87,111 @@ const props = defineProps({
   colorByPanelCountry: { type: [Object, Map], default: () => ({}) },
   normalizeCountryId: { type: Function, default: (x) => x },
 
-  // ★ 透明度映射
+  // 透明度映射
   alphaByNode: { type: [Object, Map], default: () => ({}) },
   defaultAlpha: { type: Number, default: 1 },
 
-  // ★ 新增：逐节点边框&逐节点填充（Alt 冲突覆盖）
+  // 逐节点边框 & 逐节点填充（Alt 覆盖）
   borderColorByNode: { type: [Object, Map], default: () => ({}) },
   borderWidthByNode: { type: [Object, Map], default: () => ({}) },
   fillByNode: { type: [Object, Map], default: () => ({}) },
 })
 
-const emit = defineEmits(['update:selectedMsus'])
-
 const svgRef = ref(null)
 let mini = null
+
 const showOriginal = ref(false)
 const llmSummary = ref('')
 const llmLoading = ref(false)
 const llmError = ref('')
 
-// ★ 本地选择状态：选中的 MSU id 集合
+// 勾选状态：存 uid（= HSU key + '#' + MSU id），确保同一 MSU 出现在不同 HSU 时不混淆
 const selectedMsus = ref(new Set())
 
 // 切换显示/隐藏原文
-const toggleOriginal = () => {
-  showOriginal.value = !showOriginal.value
-}
+const toggleOriginal = () => { showOriginal.value = !showOriginal.value }
 
-// ★ 切换某个 MSU 的选择状态
-const toggleMsu = (id) => {
+// 切换某个 MSU 的选择状态
+const toggleMsu = (uid) => {
   const set = new Set(selectedMsus.value)
-  if (set.has(id)) set.delete(id)
-  else set.add(id)
+  if (set.has(uid)) set.delete(uid)
+  else set.add(uid)
   selectedMsus.value = set
-  emit('update:selectedMsus', Array.from(set))
 }
 
-// 计算当前link关联的MSU句子
+// 已选择的数量
+const selectedCount = computed(() => selectedMsus.value.size)
+
+// 计算当前 link 关联的 MSU，**带 HSU key**（panelIdx:q,r）用于分组
 const linkMsuSentences = computed(() => {
   if (!props.link?.path || !Array.isArray(props.nodes)) return []
+  // (1) 把 nodes 建立索引： "panelIdx:q,r" -> node
   const nodeMap = new Map()
   props.nodes.forEach(node => {
     const key = `${node.panelIdx}:${node.q},${node.r}`
     nodeMap.set(key, node)
   })
 
-  const allMsus = []
+  // (2) 沿 path 收集 MSU，并附上它来自哪个 HSU（hsuKey）
+  const out = []
+  const seen = new Set() // 去重同一 HSU 中重复的 MSU id（可按需求调整是否全局去重）
   const path = Array.isArray(props.link.path) ? props.link.path : []
   path.forEach(point => {
-    const pointKey = `${point.panelIdx}:${point.q},${point.r}`
-    const node = nodeMap.get(pointKey)
+    const hsuKey = `${point.panelIdx}:${point.q},${point.r}`
+    const node = nodeMap.get(hsuKey)
     if (node?.msu && Array.isArray(node.msu)) {
-      allMsus.push(...node.msu)
-    }
-  })
-
-  const uniqueMsus = []
-  const seenIds = new Set()
-  allMsus.forEach(msu => {
-    if (msu?.MSU_id && !seenIds.has(msu.MSU_id)) {
-      seenIds.add(msu.MSU_id)
-      uniqueMsus.push({
-        id: msu.MSU_id,
-        sentence: msu.sentence || 'No sentence available',
-        category: msu.category || 'Unknown',
-        para_info: msu.para_info || null,
-        ...msu
+      node.msu.forEach(msu => {
+        const id = msu?.MSU_id ?? msu?.id
+        if (id == null) return
+        const uid = `${hsuKey}#${id}` // 唯一 uid = HSU + MSU
+        if (seen.has(uid)) return
+        seen.add(uid)
+        out.push({
+          uid,
+          hsuKey,
+          id,
+          sentence: msu.sentence || msu.text || 'No sentence available',
+          category: msu.category || 'Unknown',
+          para_info: msu.para_info || null,
+          raw: msu
+        })
       })
     }
   })
-  return uniqueMsus
+  return out
 })
 
-// 生成LLM总结
-const generateSummary = async () => {
-  if (linkMsuSentences.value.length === 0) {
-    llmSummary.value = '暂无内容可总结'
+/** 点击按钮：仅对已勾选的 MSU 做总结，并按 HSU 分组发给后端 */
+const summarizeSelected = async () => {
+  llmError.value = ''
+  llmSummary.value = ''
+
+  // 组装 groups: [{ hsu: 'panelIdx:q,r', sentences: ['MSU 123: text', ...] }, ...]
+  const byHSU = new Map()
+  const sel = selectedMsus.value
+  linkMsuSentences.value.forEach(m => {
+    if (!sel.has(m.uid)) return
+    if (!byHSU.has(m.hsuKey)) byHSU.set(m.hsuKey, [])
+    byHSU.get(m.hsuKey).push(`MSU ${m.id}: ${m.sentence}`)
+  })
+  const groups = Array.from(byHSU.entries()).map(([hsu, sentences]) => ({ hsu, sentences }))
+
+  if (groups.length === 0) {
+    llmError.value = 'Please select at least one MSU.'
     return
   }
-  llmLoading.value = true
-  llmError.value = ''
+
   try {
-    const sentences = linkMsuSentences.value.map(msu => msu.sentence)
-    const summary = await summarizeMsuSentences(sentences)
-    llmSummary.value = summary
-  } catch (error) {
-    console.error('生成总结失败:', error)
-    llmError.value = '总结生成失败，请重试'
+    llmLoading.value = true
+    const answer = await summarizeMsuSentences(groups) // 使用你提供的 API（已支持分组）
+    llmSummary.value = answer
+  } catch (err) {
+    console.error(err)
+    llmError.value = 'Failed to generate summary.'
   } finally {
     llmLoading.value = false
   }
 }
-
-watch(linkMsuSentences, (newSentences) => {
-  if (newSentences && newSentences.length > 0) {
-    generateSummary()
-  } else {
-    llmSummary.value = ''
-    llmError.value = ''
-  }
-}, { immediate: true })
 
 onMounted(() => {
   mini = mountMiniLink(svgRef.value, {
@@ -196,6 +209,7 @@ onMounted(() => {
   })
 })
 
+// 数据更新时刷新小卡
 watch(
   () => [
     props.link,
@@ -229,10 +243,22 @@ watch(
 )
 
 onBeforeUnmount(() => mini?.destroy())
+
+// ⚠️ 重要：移除“自动生成总结”的 watch，改为用户点击按钮才总结
+// （所以不再 watch(linkMsuSentences) 自动调用 generateSummary）
 </script>
 
 <style scoped>
-/* 原样保留你的样式（下略） */
+/* 原样保留你的样式（仅补极少量按钮容器样式） */
+
+/* —— 新增：hex 内按钮容器 —— */
+.hex-action{
+  position: absolute;
+  right: 8px;                /* 与“Show Details”右边距保持一致，如需改：6/10/12 */
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
 
 /* —— 新增：tickbox 相关 —— */
 .msu-checkwrap{
@@ -240,16 +266,13 @@ onBeforeUnmount(() => mini?.destroy())
   align-items:center;
   gap:6px;
 }
-
 .msu-check{
-  /* 不超过当前字体大小 */
   width: 0.95em;
   height: 0.95em;
   flex: none;
   margin: 0;
   vertical-align: middle;
-  /* 让风格与系统一致，同时用主题色 */
-  accent-color: #3b82f6; /* 与“Show Details”按钮同色系 */
+  accent-color: #3b82f6;
 }
 
 /* 原有样式（未改动） */
@@ -260,7 +283,6 @@ onBeforeUnmount(() => mini?.destroy())
   padding:4px; background:#fff;
   transition: all 0.3s ease;
 }
-
 .subcard.expanded { grid-template-rows: auto auto auto auto; }
 .subcard__meta{ padding:2px 2px 0 2px; line-height:1; font-size:12px; color:#6b7280; }
 .meta-label{ font-weight:600; margin-right:4px; }
@@ -269,12 +291,22 @@ onBeforeUnmount(() => mini?.destroy())
 .subcard__hex, .subcard__source, .subcard__llm{
   border:1px dashed #e5e7eb; border-radius:8px; padding:6px; min-height:40px;
 }
-
-.subcard__hex{ height:30px; overflow:hidden; position:relative; }
+.subcard__hex{
+  /* 同一行：svg 在左，按钮在右；垂直居中 */
+  position: relative;        /* 让右侧按钮以本容器为定位参照 */
+  display: flex;
+  align-items: center;       /* 按钮与 hex 垂直对齐 */
+  height: 30px;              /* 与你原设计一致 */
+}
+.hex-row{
+  display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%;
+}
 .hex-scroll{
-  max-width:100%; height:100%; display:flex; justify-content:flex-start; align-items:center;
+  max-width:100%; height:100%;
+  display:flex; justify-content:flex-start; align-items:center;
   overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
 }
+
 .hex-scroll::-webkit-scrollbar{ height:0; }
 
 .subcard__source { max-height: 200px; overflow-y: auto; transition: all 0.3s ease; }
@@ -286,11 +318,12 @@ onBeforeUnmount(() => mini?.destroy())
 .msu-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .msu-id { font-weight: 600; color: #374151; font-size: 10px; }
 
-.show-original-btn { font-size: 9px; padding: 2px 8px; border-radius: 12px; background: #3b82f6; color: white; border: none; cursor: pointer; transition: background-color 0.2s; }
+.show-original-btn { font-size: 10px; padding: 4px 10px; border-radius: 9999px; background: #3b82f6; color: white; border: none; cursor: pointer; transition: background-color 0.2s; line-height: 1; }
 .show-original-btn:hover { background: #2563eb; }
+.show-original-btn:disabled { opacity: .55; cursor: not-allowed; }
+.summarize-btn { white-space: nowrap; }
 
 .msu-text { color: #374151; font-size: 11px; line-height: 1.5; }
-
 .para-info { margin-top: 8px; padding: 8px; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 4px; }
 .para-info-content { color: #4b5563; font-size: 10px; line-height: 1.5; white-space: pre-wrap; }
 

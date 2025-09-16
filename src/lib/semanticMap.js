@@ -1,10 +1,29 @@
 
 /* === Random color helpers (top-level, guaranteed) === */
+// var COLOR_PALETTE = (typeof COLOR_PALETTE !== 'undefined' && COLOR_PALETTE) ? COLOR_PALETTE : [
+//   '#A9D08D', '#FFD966', '#9DC3E6', '#F4B183', '#C9B5F4',
+//   '#F8CBAD', '#B7DEE8', '#C6E0B4', '#FFE699', '#BDD7EE',
+//   '#C5E0B3', '#D9E1F2', '#E2F0D9', '#FCE4D6', '#EAD1DC'
+// ];
 var COLOR_PALETTE = (typeof COLOR_PALETTE !== 'undefined' && COLOR_PALETTE) ? COLOR_PALETTE : [
-  '#A9D08D', '#FFD966', '#9DC3E6', '#F4B183', '#C9B5F4',
-  '#F8CBAD', '#B7DEE8', '#C6E0B4', '#FFE699', '#BDD7EE',
-  '#C5E0B3', '#D9E1F2', '#E2F0D9', '#FCE4D6', '#EAD1DC'
+  '#8CBF75', // 柔和草绿 (科技感的绿色)
+  '#E5C45A', // 稳重金黄，避免过亮
+  '#6FA8DC', // 中等饱和度的蓝色
+  '#D99970', // 柔和橙色，不刺眼
+  '#9A7FCC', // 中性色调的紫色
+  '#E9A08D', // 柔和砖红，避免太浅
+  '#76C2C7', // 稳定青蓝
+  '#A6D785', // 温和浅绿
+  '#F2D16B', // 柔和琥珀色
+  '#89B4E0', // 低饱和度天蓝
+  '#93B96F', // 稳重军绿色
+  '#A7BCE3', // 中灰蓝，适合论文插图
+  '#B9D8B1', // 清爽浅绿
+  '#E4B7B3', // 柔和粉红
+  '#C090A6'  // 稳定紫红
 ];
+
+
 var pickRandomColor = (typeof pickRandomColor === 'function') ? pickRandomColor : function(seedStr){
   var arr = COLOR_PALETTE; if (!arr || !arr.length) return '#A9D08D';
   if (seedStr) {

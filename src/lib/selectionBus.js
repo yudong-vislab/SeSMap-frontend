@@ -37,3 +37,19 @@ export function emitSelectionSaved(payload) {
   const p = payload || { nodes: [], links: [] };
   subsSaved.forEach(fn => { try { fn(p); } catch(e){ console.warn(e); } });
 }
+
+// ===== summarize-selected bus =====
+const _summarizeHandlers = new Set();
+
+/** 右侧点击“Summarize Selected”时触发 */
+export function emitSummarizeSelected(payload) {
+  // payload: { stepId, title, nodes: [{key, panelIdx,q,r, msus:[{id,text,checked}]}], selectedTexts: string[] }
+  _summarizeHandlers.forEach(fn => fn && fn(payload));
+}
+
+/** 上游（左侧或服务层）订阅后做实际 LLM 调用 */
+export function onSummarizeSelected(handler) {
+  _summarizeHandlers.add(handler);
+  return () => _summarizeHandlers.delete(handler);
+}
+

@@ -47,6 +47,7 @@
               />
             </div>
           </div>
+
         </article>
       </div>
     </div>
@@ -55,7 +56,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, reactive } from 'vue'
-import { onSelectionSaved } from '../lib/selectionBus'
+import { onSelectionSaved, emitSummarizeSelected } from '../lib/selectionBus'
 import LinkCard from './LinkCard.vue'
 import { buildStartCountMap } from '@/lib/useLinkCard'
 
@@ -82,6 +83,9 @@ onMounted(() => {
     const nodes = Array.isArray(payload.nodes) ? payload.nodes : []
     const links = Array.isArray(payload.links) ? payload.links : []
 
+    // —— NEW：按 HSU 分组 MSU，并按“路径顺序”排列 HSU —— //
+    const hsus = groupHSUs(nodes, links)
+
     steps.value.push({
       id,
       title: finalTitle,
@@ -99,7 +103,8 @@ onMounted(() => {
       borderColorByNode: payload.borderColorByNode || {},
       borderWidthByNode: payload.borderWidthByNode || {},
       fillByNode: payload.fillByNode || {},
-
+      // 右侧文本区：按 HSU 分组后的 MSU 结构（含勾选位）
+      hsus,
       rawText: payload.rawText || '',
       summary: payload.summary || '',
       meta: payload.meta || {}
@@ -242,6 +247,71 @@ function onDrop(stepIdx, linkIdx, e) {
   dragging.from = dragging.to = null;
 }
 function onDragEnd() { dragging.from = dragging.to = null; }
+ /** ========== NEW：按 HSU 分组   路径排序 ========== */
+ function groupHSUs(nodes, links) {
+   const keyOf = (n) => `${n.panelIdx}|${n.q},${n.r}`
+   const map = new Map() // key -> { key, panelIdx,q,r,country_id, msus:[{id,text,checked}] }
+   ;(nodes || []).forEach(n => {
+     const k = keyOf(n)
+     if (!map.has(k)) {
+       map.set(k, { key: k, panelIdx: n.panelIdx, q: n.q, r: n.r, country_id: n.country_id ?? null, msus: [] })
+     }
+     const bucket = map.get(k)
+     // 兼容两种：n.msu 或 n.msu_ids（无文本时用 id 兜底字符串）
+     if (Array.isArray(n.msu) && n.msu.length) {
+       n.msu.forEach((m, idx) => bucket.msus.push({
+         id: m.id ?? `${k}#${idx}`,
+         text: (m.text ?? m.summary ?? String(m.id ?? idx)).toString(),
+         checked: false
+       }))
+     } else if (Array.isArray(n.msu_ids) && n.msu_ids.length) {
+       n.msu_ids.forEach((mid, idx) => bucket.msus.push({
+         id: mid ?? `${k}#${idx}`,
+         text: String(mid ?? `${k}#${idx}`),
+         checked: false
+       }))
+     }
+   })
+   // 路径顺序（取第一条 link 的 path 为序）
+   const first = Array.isArray(links) && links[0]
+   const pathOrder = []
+   if (first && Array.isArray(first.path)) {
+     first.path.forEach(p => pathOrder.push(`${p.panelIdx}|${p.q},${p.r}`))
+   }
+   const keys = Array.from(map.keys())
+   keys.sort((a, b) => {
+     const ia = pathOrder.indexOf(a), ib = pathOrder.indexOf(b)
+     if (ia >= 0 && ib >= 0) return ia - ib
+     if (ia >= 0) return -1
+     if (ib >= 0) return 1
+     // 无路径：按 panelIdx -> q -> r 稳定排序
+     const [pa, qa, ra] = a.split(/[|,]/).map(Number)
+     const [pb, qb, rb] = b.split(/[|,]/).map(Number)
+     if (pa !== pb) return pa - pb
+     if (qa !== qb) return qa - qb
+     return ra - rb
+   })
+   return keys.map(k => map.get(k))
+ }
+ 
+ /** ========== NEW：收集勾选 MSU -> 发起“总结请求” ========== */
+ function summarizeStep(stepIdx) {
+   const s = steps.value[stepIdx]
+   if (!s) return
+   const selectedTexts = []
+   ;(s.hsus || []).forEach(h => (h.msus || []).forEach(m => {
+     if (m.checked && m.text) selectedTexts.push(m.text)
+   }))
+   // 右侧不直接调大模型；只发“总结请求”事件，交给上游处理
+   emitSummarizeSelected({
+     stepId: s.id,
+     title: s.title,
+     nodes: s.hsus,         // 携带结构，便于上游溯源
+     selectedTexts
+   })
+ }
+
+
 </script>
 
 <style scoped>

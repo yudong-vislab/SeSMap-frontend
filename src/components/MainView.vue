@@ -89,7 +89,7 @@ function onSave() {
 
       <div class="mv-actions">
         <button class="add-btn" @click="onAddSubspace" title="Add subspace">＋</button>
-        <button class="filter-btn" title="Filter">Filter</button>
+        <!-- <button class="filter-btn" title="Filter">Filter</button> -->
         <button class="save-btn" title="Save" @click="onSave">Save</button>
       </div>
     </header>
@@ -192,8 +192,8 @@ function onSave() {
 
 /* 活动态（绿色） */
 .mode-btn.is-active{
-  background:#379b61;      /* 绿色 */
-  border-color:#379b61;
+  background:#3b82f6;      /* 绿色 */
+  border-color:#3b82f6;
   color:#fff; opacity:1;
 }
 
