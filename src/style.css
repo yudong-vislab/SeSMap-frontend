@@ -325,7 +325,7 @@ body,
 
 /* 保持 hover 不变色（与 close 区分开） */
 .subspace-release:hover {
-  background: #379b61;
+  background: #3b82f6;
   color: #333;
 }
 
