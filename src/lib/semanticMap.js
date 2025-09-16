@@ -267,6 +267,9 @@ export async function initSemanticMap({
     globalCountryColors: new Map(),  // Map<normalizedCountryId, "#RRGGBB">
     syncCountryColorAcrossPanels: true, // 打开后，任何一次给某国设色，会同步到全部子空间
 
+    
+    routeDraft: null,
+
   };
 
   const cleanupFns = [];
@@ -3829,44 +3832,121 @@ function updateHexStyles() {
     publishToStepAnalysis?.();
   }
 
+  function commitRouteDraft() {
+    const draft = App.routeDraft;
+    if (!draft || !Array.isArray(draft.path) || draft.path.length < 2) {
+      cancelRouteDraft();
+      return;
+    }
+    const path = draft.path.map(p => ({ q: p.q, r: p.r, panelIdx: p.panelIdx }));
+    const first = path[0], last = path[path.length-1];
+
+    const link = {
+      type: 'flight',
+      panelIdxFrom: first.panelIdx,
+      panelIdxTo:   last.panelIdx,
+      from: { q:first.q, r:first.r, panelIdx:first.panelIdx },
+      to:   { q:last.q,  r:last.r,  panelIdx:last.panelIdx  },
+      path
+    };
+
+    App._lastLinks.push(link);
+    // 清理草稿 & 临时线
+    App.routeDraft = null;
+    App.flightStart = null;
+    App.flightDraft = null;  
+    
+    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
+    updateHexStyles();
+    publishToStepAnalysis();
+  }
+
+  function cancelRouteDraft() {
+    App.routeDraft = null;
+    App.flightStart = null;
+    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
+    updateHexStyles();
+    publishToStepAnalysis();
+  }
+
+
   
   function handleDoubleClick(panelIdx, q, r, event) {
     const here = { panelIdx, q, r };
 
-    if (!App.flightStart) {
+    // 第一次双击：仅设起点并进入“建线中”视觉
+    if (!App.flightStart && !App.flightDraft) {
       App.flightStart = here;
       const rect = App.playgroundEl.getBoundingClientRect();
       App.currentMouse.x = event.clientX - rect.left;
       App.currentMouse.y = event.clientY - rect.top;
-      // 双击也把所在连通分量选上
       selectComponent(panelIdx, q, r);
       updateHexStyles();
+      // 预览：建线中
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, true);
       publishToStepAnalysis();
       return;
     }
 
-    const same = App.flightStart.panelIdx === panelIdx && App.flightStart.q === q && App.flightStart.r === r;
-    if (same) {
+    // 如果点在当前起点上：视为“结束构建”（不删除已建内容）
+    const sameAsStart = App.flightStart
+      && App.flightStart.panelIdx === panelIdx
+      && App.flightStart.q === q
+      && App.flightStart.r === r;
+
+    if (sameAsStart && App.flightDraft) {
+      // 结束多跳构建
       App.flightStart = null;
+      App.flightDraft = null;
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
       updateHexStyles();
       publishToStepAnalysis();
       return;
     }
 
-    // 建立 flight
-    addCustomFlightLink(App.flightStart, here);
+    // —— 进入“追加/新建草稿”的分支 —— //
+    // 如果还没有草稿：以 start -> here 新建一条 flight，并把它作为草稿保存下来
+    if (!App.flightDraft) {
+      const start = App.flightStart; // 一定有
+      const uid = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2);
 
-    // 两端固定为已选（保持选中）
-    App.persistentHexKeys.add(pkey(App.flightStart.panelIdx, App.flightStart.q, App.flightStart.r));
+      const draft = {
+        type: 'flight',
+        _uid: uid,                 // 让 buildSplitLinks 的 baseId 识别为同一条线
+        panelIdxFrom: start.panelIdx,
+        panelIdxTo: here.panelIdx,
+        from: { q: start.q, r: start.r, panelIdx: start.panelIdx },
+        to:   { q, r, panelIdx },
+        path: [
+          { q: start.q, r: start.r, panelIdx: start.panelIdx },
+          { q, r, panelIdx }
+        ]
+      };
+      App._lastLinks.push(draft);
+      App.flightDraft = draft;
+    } else {
+      // 已有草稿：把 here 追加到同一条 path 的尾部（避免重复点）
+      const d = App.flightDraft;
+      const last = d.path[d.path.length - 1];
+      if (!(last.panelIdx === panelIdx && last.q === q && last.r === r)) {
+        d.path.push({ q, r, panelIdx });
+        d.panelIdxTo = panelIdx;
+        d.to = { q, r, panelIdx };
+      }
+    }
+
+    // 保持“仍在建线中”的状态，起点移动到新端点，方便继续双击延长
     App.persistentHexKeys.add(pkey(panelIdx, q, r));
+    App.flightStart = here;
 
-    App.flightStart = null;
-    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
+    drawOverlayLinesFromLinks(
+      App._lastLinks,
+      App.allHexDataByPanel,
+      App.hexMapsByPanel,
+      true // 建线中预览
+    );
     updateHexStyles();
     publishToStepAnalysis();
-
     ModeUI.computeAndApply({});
   }
 
@@ -3904,7 +3984,7 @@ function updateHexStyles() {
       subspaceDiv.style.left = (origLeft + dx) + 'px';
       subspaceDiv.style.top  = (origTop  + dy) + 'px';
       requestAnimationFrame(() => {
-        drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
+        drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!(App.flightStart || App.flightDraft));
       });
     };
 
@@ -3971,7 +4051,7 @@ function observePanelResize() {
         };
       }
       syncContainerHeight(subspaceDiv);
-      drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
+      drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!(App.flightStart || App.flightDraft));
       updateHexStyles();
     });
     subspaceDiv._resizeObserver = ro;
@@ -4041,28 +4121,49 @@ function observePanelResize() {
   document.addEventListener('mousemove', onMouseMoveGlobal);
   cleanupFns.push(() => document.removeEventListener('mousemove', onMouseMoveGlobal));
 
-  // 点击空白：取消选中；双击空白：取消起点
+  // 点击空白：单击 = 清空并回到默认；双击 = 优先处理正在绘制的连线/起点
   const onBlankClick = (e) => {
-    if (e.target === App.playgroundEl) {
-      App.selectedHex = null;
-      App.neighborKeySet.clear();
-      App.selectedRouteIds.clear();   // ★ 新增
-      App.excludedHexKeys.clear();    // ★ 新增
-      App.persistentHexKeys.clear();  // ★ 新增
-      App.highlightedHexKeys.clear(); // ★ 新增：把悬停预览也清掉
-      // ★ 清空后也要重画，恢复默认线路形态
-      drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
-      App.highlightedHexKeys.clear();
-      App.hoveredHex = null;
-      // App.focusCountryId = null;    // ★ 退出国家聚焦
-      updateHexStyles();
-      publishToStepAnalysis();
+    if (e.target !== App.playgroundEl) return;
 
-      // UI 复位
-      // ModeUI.computeAndApply({});
-      ModeUI.forceGroupDefault();
+    // —— 双击空白：优先收尾/取消 —— //
+    if (e.detail === 2) {
+      // 有多跳草稿：≥2 点提交；否则取消
+      if (App.routeDraft && Array.isArray(App.routeDraft.path)) {
+        if (App.routeDraft.path.length >= 2) {
+          commitRouteDraft();   // 生成一条 {type:'flight', path:[...]} link 并 push 到 App._lastLinks
+        } else {
+          cancelRouteDraft();   // 清空草稿与临时线
+        }
+        return; // 已处理完，不再复位 UI
+      }
+      // 仅有旧的一跳临时起点：清掉即可
+      if (App.flightStart) {
+        App.flightStart = null;
+        drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
+        updateHexStyles();
+        publishToStepAnalysis();
+        return; // 不复位 UI，避免用户连线时被强制切回 Group
+      }
+      // 若无草稿/起点，落回到“单击清空”的逻辑（不 return）
     }
+
+    // —— 单击空白：清空一切临时/选中，并回到默认模式 —— //
+    App.selectedHex = null;
+    App.neighborKeySet.clear();
+    App.selectedRouteIds.clear();
+    App.excludedHexKeys.clear();
+    App.persistentHexKeys.clear();
+    App.highlightedHexKeys.clear();
+    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
+    App.highlightedHexKeys.clear();
+    App.hoveredHex = null;
+    updateHexStyles();
+    publishToStepAnalysis();
+
+    // UI 复位（仅单击时复位，双击分支已提前 return）
+    ModeUI.forceGroupDefault();
   };
+
   const onBlankDblClick = (e) => {
     if (e.target === App.playgroundEl) {
       App.flightStart = null;
