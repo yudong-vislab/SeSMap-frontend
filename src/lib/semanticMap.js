@@ -3077,27 +3077,31 @@ function hideHexTooltip() {
       bump(p0.panelIdx, p0.q, p0.r);
 
       if (type === 'flight') {
-        // flight：仍用端点绘制；不受中间点排除影响
-        const a = pts[0];
-        const b = pts[pts.length - 1];
-        if (!flightEndpointsVisible(a, b)) return;
+        // 多跳 flight：逐段绘制二次贝塞尔曲线（a-b, b-c, ...）
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i];
+          const b = pts[i + 1];
 
-        const g0 = getHexGlobalXY(a.panelIdx, a.q, a.r);
-        const g1 = getHexGlobalXY(b.panelIdx, b.q, b.r);
-        if (!g0 || !g1) return;
+          // 可见性：逐段判断（若跨 panel 也能画，因为用的是“全局坐标”）
+          if (!flightEndpointsVisible(a, b)) continue;
 
-        const dx = g1[0] - g0[0], dy = g1[1] - g0[1];
-        const mx = (g0[0] + g1[0]) / 2, my = (g0[1] + g1[1]) / 2;
-        const curveOffset = Math.sign(dx) * style.controlCurveRatio * Math.sqrt(dx*dx + dy*dy);
-        const c1x = mx + curveOffset, c1y = my - curveOffset;
+          const g0 = getHexGlobalXY(a.panelIdx, a.q, a.r);
+          const g1 = getHexGlobalXY(b.panelIdx, b.q, b.r);
+          if (!g0 || !g1) continue;
 
-        gG.links.append('path')
-          .attr('d', `M${g0[0]},${g0[1]} Q${c1x},${c1y} ${g1[0]},${g1[1]}`)
-          .attr('stroke', style.color)
-          .attr('stroke-width', style.width)
-          .attr('stroke-opacity', style.opacity)
-          .attr('fill', 'none')
-          .attr('stroke-dasharray', style.dash || null);
+          const dx = g1[0] - g0[0], dy = g1[1] - g0[1];
+          const mx = (g0[0] + g1[0]) / 2, my = (g0[1] + g1[1]) / 2;
+          const curveOffset = Math.sign(dx) * style.controlCurveRatio * Math.sqrt(dx*dx + dy*dy);
+          const c1x = mx + curveOffset, c1y = my - curveOffset;
+
+          gG.links.append('path')
+            .attr('d', `M${g0[0]},${g0[1]} Q${c1x},${c1y} ${g1[0]},${g1[1]}`)
+            .attr('stroke', style.color)
+            .attr('stroke-width', style.width)
+            .attr('stroke-opacity', style.opacity)
+            .attr('fill', 'none')
+            .attr('stroke-dasharray', style.dash || null);
+        }
       } else {
         // road/river：按过滤后的 pts 直接画，跳过被排除的中间点
         const panelIdx = pts[0].panelIdx;
@@ -3874,47 +3878,47 @@ function updateHexStyles() {
   function handleDoubleClick(panelIdx, q, r, event) {
     const here = { panelIdx, q, r };
 
-    // 第一次双击：仅设起点并进入“建线中”视觉
+    // ① 第一次双击：设起点 + 进入预览
     if (!App.flightStart && !App.flightDraft) {
       App.flightStart = here;
       const rect = App.playgroundEl.getBoundingClientRect();
       App.currentMouse.x = event.clientX - rect.left;
       App.currentMouse.y = event.clientY - rect.top;
+
+      // 可选：把该连通分量选中，与你当前交互一致
       selectComponent(panelIdx, q, r);
       updateHexStyles();
-      // 预览：建线中
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, true);
       publishToStepAnalysis();
       return;
     }
 
-    // 如果点在当前起点上：视为“结束构建”（不删除已建内容）
+    // ② 双击“当前端点” => 结束构建（不清已建内容）
     const sameAsStart = App.flightStart
       && App.flightStart.panelIdx === panelIdx
       && App.flightStart.q === q
       && App.flightStart.r === r;
 
     if (sameAsStart && App.flightDraft) {
-      // 结束多跳构建
-      App.flightStart = null;
-      App.flightDraft = null;
+      App.flightStart = null;      // ← 结束建线
+      App.flightDraft = null;      // ← 但不清 _lastLinks，保留多跳
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
       updateHexStyles();
       publishToStepAnalysis();
       return;
     }
 
-    // —— 进入“追加/新建草稿”的分支 —— //
-    // 如果还没有草稿：以 start -> here 新建一条 flight，并把它作为草稿保存下来
+    // ③ 追加/新建草稿
     if (!App.flightDraft) {
-      const start = App.flightStart; // 一定有
+      // 新建一条草稿线：a -> b
+      const start = App.flightStart; // 第一次必有
       const uid = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2);
 
       const draft = {
         type: 'flight',
-        _uid: uid,                 // 让 buildSplitLinks 的 baseId 识别为同一条线
+        _uid: uid, // 让 buildSplitLinks 把它视作一条线
         panelIdxFrom: start.panelIdx,
-        panelIdxTo: here.panelIdx,
+        panelIdxTo:   here.panelIdx,
         from: { q: start.q, r: start.r, panelIdx: start.panelIdx },
         to:   { q, r, panelIdx },
         path: [
@@ -3925,29 +3929,27 @@ function updateHexStyles() {
       App._lastLinks.push(draft);
       App.flightDraft = draft;
     } else {
-      // 已有草稿：把 here 追加到同一条 path 的尾部（避免重复点）
+      // 已有草稿：把 here 追加为下一跳
       const d = App.flightDraft;
       const last = d.path[d.path.length - 1];
       if (!(last.panelIdx === panelIdx && last.q === q && last.r === r)) {
         d.path.push({ q, r, panelIdx });
+        // 同步终点元信息
         d.panelIdxTo = panelIdx;
         d.to = { q, r, panelIdx };
       }
     }
 
-    // 保持“仍在建线中”的状态，起点移动到新端点，方便继续双击延长
-    App.persistentHexKeys.add(pkey(panelIdx, q, r));
+    // ④ 更新“当前端点”为 here，用于下一段预览（拖尾从最新端点出发）
     App.flightStart = here;
 
-    drawOverlayLinesFromLinks(
-      App._lastLinks,
-      App.allHexDataByPanel,
-      App.hexMapsByPanel,
-      true // 建线中预览
-    );
+    // 端点保留为选中
+    App.persistentHexKeys.add(pkey(here.panelIdx, here.q, here.r));
+
+    // 预览继续：已建路径 + 当前端点 → 鼠标
+    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, true);
     updateHexStyles();
     publishToStepAnalysis();
-    ModeUI.computeAndApply({});
   }
 
 
@@ -4167,6 +4169,7 @@ function observePanelResize() {
   const onBlankDblClick = (e) => {
     if (e.target === App.playgroundEl) {
       App.flightStart = null;
+      App.flightDraft = null;
       App.flightHoverTarget = null;
 
       // 双击空白才取消国家聚焦
