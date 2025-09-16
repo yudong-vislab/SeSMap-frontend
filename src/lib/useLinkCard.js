@@ -124,8 +124,17 @@ export function mountMiniLink(
   function applyHover(id) {
     hoveredId = id;
     const nodesSel = svg.selectAll('g.node');
-    if (!hoveredId) nodesSel.attr('opacity', 1);
-    else nodesSel.attr('opacity', function(){ return this.dataset.id === hoveredId ? 1 : STYLE.HOVER_DIM; });
+    if (!hoveredId) {
+      nodesSel.attr('opacity', 1);
+      // 离开 hover：让连线层浮回顶部
+      svg.select('.links-layer').raise();
+    } else {
+      nodesSel.attr('opacity', function(){ 
+        return this.dataset.id === hoveredId ? 1 : STYLE.HOVER_DIM; 
+      });
+      // 进入 hover：让节点层浮到最上面（盖住虚线）
+      svg.select('.nodes-layer').raise();
+    }
   }
 
   function render({
@@ -151,17 +160,12 @@ export function mountMiniLink(
     svg.attr('width', contentW).attr('height', STYLE.H);
 
     const g = svg.append('g');
-
-    const s = styleOfLink(link?.type);
-    g.append('polyline')
-      .attr('points', coords.map(d => `${d.x},${d.y}`).join(' '))
-      .attr('fill', 'none').attr('stroke', s.stroke)
-      .attr('stroke-width', s.width).attr('stroke-opacity', s.opacity)
-      .attr('stroke-dasharray', s.dash);
+    const gNodes = g.append('g').attr('class', 'nodes-layer'); // 先画节点层（在下）
+    const gLinks = g.append('g').attr('class', 'links-layer'); // 再画连线路层（在上）
 
     const nodeMap = new Map(nodes.map(n => [idOf(n.panelIdx, n.q, n.r), n]));
 
-    g.selectAll('g.node')
+    gNodes.selectAll('g.node')
       .data(coords, d => d._id)
       .join(enter => {
         const gg = enter.append('g')
@@ -196,6 +200,13 @@ export function mountMiniLink(
           .on('mouseleave', () => emitRightHover(null));
         return gg;
       });
+
+    const s = styleOfLink(link?.type);
+    gLinks.append('polyline')
+      .attr('points', coords.map(d => `${d.x},${d.y}`).join(' '))
+      .attr('fill', 'none').attr('stroke', s.stroke)
+      .attr('stroke-width', s.width).attr('stroke-opacity', s.opacity)
+      .attr('stroke-dasharray', s.dash);
 
     applyHover(hoveredId);
   }
