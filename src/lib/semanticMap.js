@@ -631,19 +631,48 @@ function emitSelectionPayload(){
   }catch(e){ console.warn('emitSelectionPayload failed:', e); }
 }
 
-function publishToStepAnalysis() {
-  try {
-    const nodes = buildSplitNodes();
-    const links = buildSplitLinks(App._lastLinks || []);
-    if (typeof window !== 'undefined' && window.dispatchEvent) {
-      const ev = new CustomEvent('semantic-map-export', { detail: { nodes, links } });
-      window.dispatchEvent(ev);
-    }
-    App._exportSplit = { nodes, links };
-  } catch (e) {
-    console.warn('publishToStepAnalysis failed:', e);
-  }
-}
+  function publishToStepAnalysis() {
+    try {
+     const nodes = buildSplitNodes();
+ 
+     // 1) 路线级选择 → 分段导出
+     const hasRouteSel = App.selectedRouteIds && App.selectedRouteIds.size > 0;
+     const selectedRoutes = hasRouteSel
+       ? (App._lastLinks || []).filter(L => {
+           const id = (typeof linkKey === 'function') ? linkKey(L) : (L && (L.id || L._uid));
+           return id && App.selectedRouteIds.has(id);
+         })
+       : (App._lastLinks || []);
+     const linksA = buildSplitLinks(selectedRoutes);
+ 
+     // 2) 点级选择（Ctrl 并/差集得到的 persistentHexKeys）→ 切段   单点，并与路线级结果合并
+     let links = linksA.slice();
+     if (App.persistentHexKeys && App.persistentHexKeys.size > 0 && typeof snapshotFromKeySet === 'function') {
+       const snap = snapshotFromKeySet(App.persistentHexKeys);
+       if (snap && Array.isArray(snap.links) && snap.links.length) {
+         // 用 from.key -> to.key 做签名去重，避免重复片段
+         const seen = new Set(linksA.map(e => `${e.type}|${e.from.key}->${e.to.key}`));
+         snap.links.forEach(e => {
+           const sig = `${e.type}|${e.from.key}->${e.to.key}`;
+           if (!seen.has(sig)) {
+             links.push(e);
+             seen.add(sig);
+           }
+         });
+       }
+     }
+ 
+     if (typeof window !== 'undefined' && window.dispatchEvent) {
+       const ev = new CustomEvent('semantic-map-export', { detail: { nodes, links } });
+       window.dispatchEvent(ev);
+     }
+     App._exportSplit = { nodes, links };
+   } catch (e) {
+     console.warn('publishToStepAnalysis failed:', e);
+   }
+ }
+
+
 
 // === Buckets helpers (aggregate multiple records in one hex) ===
 function ensureHatchPattern(panelIdx, svg, color) {
@@ -2284,7 +2313,15 @@ function hideHexTooltip() {
   return;
 }
 
-
+  // NEW: 给定一个点，找出“包含该点”的所有整条链路 IDs（按你重申的‘邻居=整条链路’）
+  function getRouteIdsByNode(panelIdx, q, r){
+    const out = new Set();
+    (App._lastLinks || []).forEach(link => {
+      if (!isSelectableRoute(link)) return;
+      if (linkContainsNode(link, panelIdx, q, r)) out.add(linkKey(link));
+    });
+    return out;
+  }
 
   // === 路线级选择：辅助 ===
   function linkKey(link){
@@ -2313,6 +2350,39 @@ function hideHexTooltip() {
     const pIdx0 = resolvePanelIdxForPathPoint(p0, link, 0);
     return (pIdx0 === panelIdx && p0.q === q && p0.r === r);
   }
+
+  // 在不改动原函数的前提下，重算路线点并“保留额外单点”
+  function recomputePersistentFromRoutesPreservingExtras() {
+    // 1) 记录当前已选的所有点（含此前 Ctrl 叠加的单点）
+    const extras = new Set(App.persistentHexKeys || []);
+
+    // 2) 预先算出“路线上的所有点”，用于后面判断哪些是路线点
+    const routeKeys = new Set();
+    if (App.selectedRouteIds && App.selectedRouteIds.size > 0 && Array.isArray(App._lastLinks)) {
+      (App._lastLinks || []).forEach(L => {
+        const id = (typeof linkKey === 'function') ? linkKey(L) : (L && (L.id || L._uid));
+        if (!id || !App.selectedRouteIds.has(id)) return;
+        if (Array.isArray(L.path)) {
+          L.path.forEach(p => routeKeys.add(pkey(p.panelIdx, p.q, p.r)));
+        } else if (L.from && L.to) {
+          routeKeys.add(pkey(L.from.panelIdx, L.from.q, L.from.r));
+          routeKeys.add(pkey(L.to.panelIdx, L.to.q, L.to.r));
+        }
+      });
+    }
+
+    // 3) 用原有逻辑重建“路线点”到 persistentHexKeys（这一步会清空重算）
+    if (typeof recomputePersistentFromRoutes === 'function') {
+      recomputePersistentFromRoutes();
+    }
+
+    // 4) 把非路线的“额外点”再并回 persistentHexKeys
+    const target = App.persistentHexKeys || (App.persistentHexKeys = new Set());
+    extras.forEach(k => {
+      if (!routeKeys.has(k)) target.add(k);
+    });
+  }
+
 
   // === 根据当前选中的“整条线路 + 排除点”，重建节点选集 App.persistentHexKeys ===
   function recomputePersistentFromRoutes(){
@@ -3697,25 +3767,6 @@ function updateHexStyles() {
   }
 
 
-  function publishToStepAnalysis() {
-    // 优先使用“按路线”的快照
-    if (App.selectedRouteIds.size > 0) {
-      App._lastSnapshot = snapshotFromSelectedRoutes();
-    } else {
-      App._lastSnapshot = snapshotFromKeySet(App.persistentHexKeys || new Set());
-    }
-  }
-
-  // —— 小工具：构造“中心点+邻居”的 key 集 —— //
-  function buildNeighborhood(panelIdx, q, r) {
-    const centerKey = pkey(panelIdx, q, r);
-    const adj = buildUndirectedAdjacency();      // Map(key -> Set(key))
-    const nbrs = adj.get(centerKey) || new Set();
-    const set = new Set([centerKey]);
-    nbrs.forEach(k => set.add(k));
-    return { centerKey, set, neighbors: nbrs };
-  }
-
   // —— 小工具：无向边 key —— //
   function undirectedEdgeKey(panelIdx, q1, r1, q2, r2) {
     const a = `${q1},${r1}`, b = `${q2},${r2}`;
@@ -3723,26 +3774,7 @@ function updateHexStyles() {
     return `${panelIdx}|${u}|${v}`;
   }
 
-  // —— 小工具：对“中心点与邻居”的边集合做增删（toggle=false=覆盖式添加；true=切换） —— //
-  function upsertNeighborhoodEdges(panelIdx, q, r, neighborsSet, { toggle=false } = {}) {
-    if (!App.selectedEdgeKeys) App.selectedEdgeKeys = new Set();
-    neighborsSet.forEach(nb => {
-      if (typeof nb !== 'string') return;
-      const parts = nb.split('|')[1]; // "q,r"
-      if (!parts) return;
-      const [q2, r2] = parts.split(',').map(Number);
-      if (q2 === q && r2 === r) return;
-      const ek = undirectedEdgeKey(panelIdx, q, r, q2, r2);
-      if (toggle) {
-        if (App.selectedEdgeKeys.has(ek)) App.selectedEdgeKeys.delete(ek);
-        else App.selectedEdgeKeys.add(ek);
-      } else {
-        App.selectedEdgeKeys.add(ek);
-      }
-    });
-  }
-
-  // —— 修正后的唯一点击处理 —— //
+  // —— 单击：按“整条链路”为基本单位；Ctrl 做并/差集 —— //
   function handleSingleClick(panelIdx, q, r, withCtrl = false, withShift = false) {
     const k = pkey(panelIdx, q, r);
 
@@ -3772,17 +3804,17 @@ function updateHexStyles() {
         const cid = hex?.country_id ? normalizeCountryId(hex.country_id) : null;
         if (cid) {
           // 差集：国家 - 冲突区（保证 Alt Click 后的“高亮/上色集合”与右键逻辑一致）
-           const all = getCountryKeysInPanel(panelIdx, cid);
-           const conflicts = getConflictKeysForCountryInPanel(panelIdx, cid);
-           const filteredKeys = new Set([...all].filter(k => !conflicts.has(k)));
- 
-           App.highlightedHexKeys = new Set(filteredKeys);
-           App._pendingColorEdit = {
-             panelIdx,
-             keys: new Set(filteredKeys),
-             color: getCountryColorOverride(panelIdx, cid)?.color || null,
-             alphaByKey: buildAlphaMapForPanelCountry(panelIdx, cid) // 该函数内部本就排冲突；保留用于透明度分配
-           };
+          const all = getCountryKeysInPanel(panelIdx, cid);
+          const conflicts = getConflictKeysForCountryInPanel(panelIdx, cid);
+          const filteredKeys = new Set([...all].filter(k => !conflicts.has(k)));
+
+          App.highlightedHexKeys = new Set(filteredKeys);
+          App._pendingColorEdit = {
+            panelIdx,
+            keys: new Set(filteredKeys),
+            color: getCountryColorOverride(panelIdx, cid)?.color || null,
+            alphaByKey: buildAlphaMapForPanelCountry(panelIdx, cid) // 该函数内部本就排冲突；保留用于透明度分配
+          };
 
           App.lastSelectionKind = 'country-preview';
           updateHexStyles();
@@ -3799,44 +3831,101 @@ function updateHexStyles() {
     App._pendingColorEdit = null;
     if (App.highlightedHexKeys) App.highlightedHexKeys.clear?.();
 
-    // 计算“中心点+邻居”
-    const { centerKey, set: nhSet, neighbors } = buildNeighborhood(panelIdx, q, r);
+    // —— 依据“点 ⇒ 所在整条链路集合”来选择（而不是一跳邻居） —— //
+    const routeIdsAtPoint = new Set();
+    (App._lastLinks || []).forEach(L => {
+      const t = (L && L.type) || 'road';
+      const isSelectable = (t === 'flight' || t === 'road' || t === 'river');
+      if (!isSelectable) return;
+      try {
+        if (typeof linkContainsNode === 'function') {
+          if (linkContainsNode(L, panelIdx, q, r)) {
+            const rid = (typeof linkKey === 'function') ? linkKey(L) : (L.id || L._uid);
+            if (rid) routeIdsAtPoint.add(rid);
+          }
+        } else {
+          // 兜底：简单判断 path 中是否含该点
+          const inPath = Array.isArray(L.path) && L.path.some(p => p.panelIdx === panelIdx && p.q === q && p.r === r);
+          if (inPath) {
+            const rid = (typeof linkKey === 'function') ? linkKey(L) : (L.id || L._uid);
+            if (rid) routeIdsAtPoint.add(rid);
+          }
+        }
+      } catch(_) {}
+    });
 
-    // —— Ctrl：集合“切换/叠加”；非 Ctrl：重置为这个邻域 —— //
-    if (withCtrl || App.modKeys?.ctrl || App.modKeys?.meta) {
-      // 判定这组点是否“都在选集里”
-      let allIn = true;
-      nhSet.forEach(x => { if (!App.persistentHexKeys.has(x)) allIn = false; });
+    const ctrlLike = withCtrl || App.modKeys?.ctrl || App.modKeys?.meta;
 
-      if (allIn) {
-        // => 整组移除
-        nhSet.forEach(x => App.persistentHexKeys.delete(x));
-        upsertNeighborhoodEdges(panelIdx, q, r, nhSet, { toggle:true });
-      } else {
-        // => 整组加入
-        nhSet.forEach(x => App.persistentHexKeys.add(x));
-        upsertNeighborhoodEdges(panelIdx, q, r, nhSet, { toggle:true });
-      }
-      App.selectedHex = { panelIdx, q, r };
-      App.lastSelectionKind = 'multi-toggle';
-    } else {
-      // 非 Ctrl：重置为“这个点 + 它的邻居”
-      App.persistentHexKeys.clear();
+    if (!ctrlLike) {
+      // —— 非 Ctrl：选择“该点所在的整条链路集合”；若该点不在任何链路上，则退化为仅该点 —— //
       App.selectedEdgeKeys?.clear?.();
-      nhSet.forEach(x => App.persistentHexKeys.add(x));
-      upsertNeighborhoodEdges(panelIdx, q, r, nhSet, { toggle:false });
+      App.selectedRouteIds?.clear?.();
+
+      if (routeIdsAtPoint.size > 0) {
+        routeIdsAtPoint.forEach(id => App.selectedRouteIds.add(id));
+        App.lastSelectionKind = 'route';
+        if (typeof recomputePersistentFromRoutes === 'function') {
+          recomputePersistentFromRoutes(); // 由路线级选择推导节点集
+        } else {
+          // 兜底：把这些链路的所有 path 点落入 persistent
+          App.persistentHexKeys.clear();
+          (App._lastLinks || []).forEach(L => {
+            const rid = (typeof linkKey === 'function') ? linkKey(L) : (L.id || L._uid);
+            if (rid && App.selectedRouteIds.has(rid) && Array.isArray(L.path)) {
+              L.path.forEach(p => App.persistentHexKeys.add(pkey(p.panelIdx, p.q, p.r)));
+            }
+          });
+        }
+      } else {
+        // 无链路：只选该点
+        App.persistentHexKeys.clear();
+        App.persistentHexKeys.add(k);
+        App.lastSelectionKind = 'single';
+      }
+
       App.selectedHex = { panelIdx, q, r };
-      App.lastSelectionKind = 'single-neighborhood';
+    } else {
+      // —— Ctrl：对“该点所在的整条链路集合”做并/差切换；若无链路则对单点切换 —— //
+      if (!App.selectedRouteIds) App.selectedRouteIds = new Set();
+
+      if (routeIdsAtPoint.size > 0) {
+        routeIdsAtPoint.forEach(id => {
+          if (App.selectedRouteIds.has(id)) App.selectedRouteIds.delete(id);
+          else App.selectedRouteIds.add(id);
+        });
+        App.lastSelectionKind = 'route';
+        if (typeof recomputePersistentFromRoutes === 'function') {
+          recomputePersistentFromRoutes();
+        } else {
+          // 兜底：用当前 selectedRouteIds 回填节点集
+          App.persistentHexKeys.clear();
+          (App._lastLinks || []).forEach(L => {
+            const rid = (typeof linkKey === 'function') ? linkKey(L) : (L.id || L._uid);
+            if (rid && App.selectedRouteIds.has(rid) && Array.isArray(L.path)) {
+              L.path.forEach(p => App.persistentHexKeys.add(pkey(p.panelIdx, p.q, p.r)));
+            }
+          });
+        }
+      } else {
+        // 无链路：退化为单点切换
+        if (App.persistentHexKeys.has(k)) App.persistentHexKeys.delete(k);
+        else App.persistentHexKeys.add(k);
+        App.lastSelectionKind = 'single';
+      }
+
+      App.selectedHex = { panelIdx, q, r };
     }
+
     // 清掉临时 hover 预览，避免覆盖选中态视觉
     App.highlightedHexKeys?.clear?.();
+
     // 统一刷新/抛数
+    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
     emitSelectionPayload?.();          // nodes/edges/kind
     updateHexStyles();
     publishToStepAnalysis?.();
   }
-
-  function commitRouteDraft() {
+   function commitRouteDraft() {
     const draft = App.routeDraft;
     if (!draft || !Array.isArray(draft.path) || draft.path.length < 2) {
       cancelRouteDraft();
@@ -3845,7 +3934,10 @@ function updateHexStyles() {
     const path = draft.path.map(p => ({ q: p.q, r: p.r, panelIdx: p.panelIdx }));
     const first = path[0], last = path[path.length-1];
 
+    const uid = draft._uid || draft.id || ('user-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     const link = {
+      _uid: uid,
+      id: uid,
       type: 'flight',
       panelIdxFrom: first.panelIdx,
       panelIdxTo:   last.panelIdx,
@@ -3859,11 +3951,30 @@ function updateHexStyles() {
     App.routeDraft = null;
     App.flightStart = null;
     App.flightDraft = null;  
-    
-    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
-    updateHexStyles();
-    publishToStepAnalysis();
+         // ★ 更新选中路线集合（尊重 Ctrl 并/差集）
+     if (!App.selectedRouteIds) App.selectedRouteIds = new Set();
+     const rid = link.id || link._uid;
+     const ctrlLike = (d3.event?.ctrlKey || App.modKeys?.ctrl || App.modKeys?.meta);
+     if (rid) {
+       if (ctrlLike) {
+         if (App.selectedRouteIds.has(rid)) App.selectedRouteIds.delete(rid);
+         else App.selectedRouteIds.add(rid);
+       } else {
+         App.selectedRouteIds.clear();
+         App.selectedRouteIds.add(rid);
+       }
+     }
+ 
+     if (typeof recomputePersistentFromRoutes === 'function') {
+       recomputePersistentFromRoutesPreservingExtras();
+     }
+ 
+     drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
+     updateHexStyles();
+     publishToStepAnalysis();
+
   }
+
 
   function cancelRouteDraft() {
     App.routeDraft = null;
@@ -3873,20 +3984,16 @@ function updateHexStyles() {
     publishToStepAnalysis();
   }
 
-
-  
   function handleDoubleClick(panelIdx, q, r, event) {
     const here = { panelIdx, q, r };
 
-    // ① 第一次双击：设起点 + 进入预览
+    // ① 第一次双击：设起点 + 进入预览（不写入持久选集）
     if (!App.flightStart && !App.flightDraft) {
       App.flightStart = here;
       const rect = App.playgroundEl.getBoundingClientRect();
       App.currentMouse.x = event.clientX - rect.left;
       App.currentMouse.y = event.clientY - rect.top;
 
-      // 可选：把该连通分量选中，与你当前交互一致
-      selectComponent(panelIdx, q, r);
       updateHexStyles();
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, true);
       publishToStepAnalysis();
@@ -3894,16 +4001,53 @@ function updateHexStyles() {
     }
 
     // ② 双击“当前端点” => 结束构建（不清已建内容）
-    const sameAsStart = App.flightStart
-      && App.flightStart.panelIdx === panelIdx
-      && App.flightStart.q === q
-      && App.flightStart.r === r;
+    const sameAsStart =
+      App.flightStart &&
+      App.flightStart.panelIdx === panelIdx &&
+      App.flightStart.q === q &&
+      App.flightStart.r === r;
 
     if (sameAsStart && App.flightDraft) {
-      App.flightStart = null;      // ← 结束建线
-      App.flightDraft = null;      // ← 但不清 _lastLinks，保留多跳
+      const d = App.flightDraft;
+
+      // （保险）若当前端点未写入 path，则补上
+      const last = d.path[d.path.length - 1];
+      if (!(last.panelIdx === here.panelIdx && last.q === here.q && last.r === here.r)) {
+        d.path.push(here);
+      }
+
+       // ★ 选中整条新建航线（路线级）——支持 Ctrl 并/差集
+       const rid = (typeof linkKey === 'function') ? linkKey(d) : (d.id || d._uid);
+       if (!App.selectedRouteIds) App.selectedRouteIds = new Set();
+       const ctrlLike = event?.ctrlKey || App.modKeys?.ctrl || App.modKeys?.meta;
+       if (rid) {
+         if (ctrlLike) {
+           if (App.selectedRouteIds.has(rid)) App.selectedRouteIds.delete(rid);
+           else App.selectedRouteIds.add(rid);
+         } else {
+           App.selectedRouteIds.clear();
+           App.selectedRouteIds.add(rid);
+         }
+       }
+
+      App.lastSelectionKind = 'route';
+
+      // ★ 清理预览/hover/单点残留，避免端点常亮
+      App.highlightedHexKeys?.clear?.();
+      App.hoveredHex = null;
+      App.selectedHex = null;
+      App.flightHoverTarget = null;  // ← 关键：清掉航线 hover 目标
+      // 结束构建状态
+      App.flightStart = null;
+      App.flightDraft = null;
+
+      // ★ 路线→节点：由路线级回填持久选集并统一重绘
+      if (typeof recomputePersistentFromRoutes === 'function') {
+        recomputePersistentFromRoutesPreservingExtras();
+      }
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
       updateHexStyles();
+      if (typeof emitSelectionPayload === 'function') emitSelectionPayload();
       publishToStepAnalysis();
       return;
     }
@@ -3943,8 +4087,12 @@ function updateHexStyles() {
     // ④ 更新“当前端点”为 here，用于下一段预览（拖尾从最新端点出发）
     App.flightStart = here;
 
-    // 端点保留为选中
-    App.persistentHexKeys.add(pkey(here.panelIdx, here.q, here.r));
+    // —— 预览而非落盘：只保留当前端点（可选：也把倒数第二个点做轻微预览） —— //
+    // 预览：先清旧再加新（避免 a,b,c... 残留）
+    if (App.highlightedHexKeys && typeof pkey === 'function') {
+      App.highlightedHexKeys.clear();                     // ★ 关键：不累计
+      App.highlightedHexKeys.add(pkey(here.panelIdx, here.q, here.r));
+    }
 
     // 预览继续：已建路径 + 当前端点 → 鼠标
     drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, true);
@@ -3952,24 +4100,6 @@ function updateHexStyles() {
     publishToStepAnalysis();
   }
 
-
-  function addCustomFlightLink(a, b) {
-    const flight = {
-      type: 'flight',
-      panelIdxFrom: a.panelIdx,
-      panelIdxTo: b.panelIdx,
-      from: { q: a.q, r: a.r, panelIdx: a.panelIdx },
-      to:   { q: b.q, r: b.r, panelIdx: b.panelIdx },
-      path: [
-        { q: a.q, r: a.r, panelIdx: a.panelIdx },
-        { q: b.q, r: b.r, panelIdx: b.panelIdx }
-      ]
-    };
-    console.log("flight:", flight);
-    App._lastLinks.push(flight);
-    drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
-    publishToStepAnalysis();
-  }
 
   /* =========================
    * 面板拖拽/尺寸变化/全局事件
@@ -4452,23 +4582,59 @@ function exportMiniColorMaps() {
 
     pulseSelection() { publishToStepAnalysis(); },
     getSelectionSnapshot() {
-        let snap;
-        if (App.selectedRouteIds && App.selectedRouteIds.size > 0) {
-          snap = snapshotFromSelectedRoutes();
-        } else {
-          const keySet = (App.persistentHexKeys && App.persistentHexKeys.size)
-            ? App.persistentHexKeys
-            : App.highlightedHexKeys;
-          snap = snapshotFromKeySet(keySet || new Set());
-        }
-        const focusId = App.selectedHex
-          ? `${App.selectedHex.panelIdx}:${App.selectedHex.q},${App.selectedHex.r}`
-          : null;
+      // 1) 路线级快照（有选路线就取，没有就为空）
+      const hasRouteSel = App.selectedRouteIds && App.selectedRouteIds.size > 0;
+      const routeSnap = hasRouteSel
+        ? (snapshotFromSelectedRoutes() || { nodes: [], links: [] })
+        : { nodes: [], links: [] };
 
-        // 想一起返回也可以（可选）
-        const mini = _buildMiniSnapshot();
-        return { ...snap, meta: { focusId, miniPalette: mini } };
-      },
+      // 2) 点级快照（来自 persistentHexKeys；为空时退到 highlighted 以保持原有预览语义）
+      const keySet = (App.persistentHexKeys && App.persistentHexKeys.size)
+        ? App.persistentHexKeys
+        : App.highlightedHexKeys;
+      const keySnap = snapshotFromKeySet(keySet || new Set()) || { nodes: [], links: [] };
+
+      // 3) 合并：nodes 去重 + links 去重（按 type + 起止 key 去重，兼容 from/to 或 path 结构）
+      const nodes = [];
+      const nodeSeen = new Set();
+      const pushNode = (n) => {
+        if (!n) return;
+        const nk = `${n.panelIdx}:${n.q},${n.r}`;
+        if (!nodeSeen.has(nk)) { nodeSeen.add(nk); nodes.push(n); }
+      };
+      (routeSnap.nodes || []).forEach(pushNode);
+      (keySnap.nodes || []).forEach(pushNode);
+
+      const links = [];
+      const linkSeen = new Set();
+      const sigOf = (e) => {
+        if (!e) return '';
+        const t = e.type || 'link';
+        // 兼容两种结构：from/to 或 path[]
+        const fromKey = e.from?.key
+          || (Array.isArray(e.path) && e.path[0]?.key)
+          || (e.from ? `${e.from.panelIdx}:${e.from.q},${e.from.r}` : '');
+        const toKey = e.to?.key
+          || (Array.isArray(e.path) && e.path[e.path.length - 1]?.key)
+          || (e.to ? `${e.to.panelIdx}:${e.to.q},${e.to.r}` : '');
+        return `${t}|${fromKey}->${toKey}`;
+      };
+      const pushLink = (e) => {
+        const s = sigOf(e);
+        if (s && !linkSeen.has(s)) { linkSeen.add(s); links.push(e); }
+      };
+      (routeSnap.links || []).forEach(pushLink);
+      (keySnap.links || []).forEach(pushLink);
+
+      // 4) meta 保持你的原样
+      const focusId = App.selectedHex
+        ? `${App.selectedHex.panelIdx}:${App.selectedHex.q},${App.selectedHex.r}`
+        : null;
+      const mini = _buildMiniSnapshot();
+
+      return { nodes, links, meta: { focusId, miniPalette: mini } };
+    },
+
 
       // ✅ 单独提供 getMiniColorMaps 给 MainView.vue 用
       getMiniColorMaps() {
