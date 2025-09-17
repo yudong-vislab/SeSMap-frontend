@@ -3894,8 +3894,8 @@ function updateHexStyles() {
           else App.selectedRouteIds.add(id);
         });
         App.lastSelectionKind = 'route';
-        if (typeof recomputePersistentFromRoutes === 'function') {
-          recomputePersistentFromRoutes();
+        if (typeof recomputePersistentFromRoutesPreservingExtras === 'function') {
+          recomputePersistentFromRoutesPreservingExtras();
         } else {
           // 兜底：用当前 selectedRouteIds 回填节点集
           App.persistentHexKeys.clear();
@@ -3951,7 +3951,7 @@ function updateHexStyles() {
     App.routeDraft = null;
     App.flightStart = null;
     App.flightDraft = null;  
-         // ★ 更新选中路线集合（尊重 Ctrl 并/差集）
+      // ★ 更新选中路线集合（尊重 Ctrl 并/差集）
      if (!App.selectedRouteIds) App.selectedRouteIds = new Set();
      const rid = link.id || link._uid;
      const ctrlLike = (d3.event?.ctrlKey || App.modKeys?.ctrl || App.modKeys?.meta);
@@ -4042,7 +4042,7 @@ function updateHexStyles() {
       App.flightDraft = null;
 
       // ★ 路线→节点：由路线级回填持久选集并统一重绘
-      if (typeof recomputePersistentFromRoutes === 'function') {
+      if (typeof recomputePersistentFromRoutesPreservingExtras === 'function') {
         recomputePersistentFromRoutesPreservingExtras();
       }
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, false);
@@ -4582,51 +4582,40 @@ function exportMiniColorMaps() {
 
     pulseSelection() { publishToStepAnalysis(); },
     getSelectionSnapshot() {
-      // 1) 路线级快照（有选路线就取，没有就为空）
+      // 1) 先取“路线级快照”（若有选择）
       const hasRouteSel = App.selectedRouteIds && App.selectedRouteIds.size > 0;
       const routeSnap = hasRouteSel
-        ? (snapshotFromSelectedRoutes() || { nodes: [], links: [] })
+        ? snapshotFromSelectedRoutes()
         : { nodes: [], links: [] };
 
-      // 2) 点级快照（来自 persistentHexKeys；为空时退到 highlighted 以保持原有预览语义）
-      const keySet = (App.persistentHexKeys && App.persistentHexKeys.size)
-        ? App.persistentHexKeys
-        : App.highlightedHexKeys;
-      const keySnap = snapshotFromKeySet(keySet || new Set()) || { nodes: [], links: [] };
+      // 2) 计算需要并入的“额外点集”(extras) = persistentHexKeys - (路线已包含的节点)
+      const keySetBase =
+        (App.persistentHexKeys && App.persistentHexKeys.size)
+          ? App.persistentHexKeys
+          : App.highlightedHexKeys;
+      const baseSet = new Set(keySetBase || []);
 
-      // 3) 合并：nodes 去重 + links 去重（按 type + 起止 key 去重，兼容 from/to 或 path 结构）
-      const nodes = [];
-      const nodeSeen = new Set();
-      const pushNode = (n) => {
-        if (!n) return;
-        const nk = `${n.panelIdx}:${n.q},${n.r}`;
-        if (!nodeSeen.has(nk)) { nodeSeen.add(nk); nodes.push(n); }
-      };
-      (routeSnap.nodes || []).forEach(pushNode);
-      (keySnap.nodes || []).forEach(pushNode);
+      let extrasSet = baseSet;
+      if (hasRouteSel && Array.isArray(routeSnap?.nodes)) {
+        const inRoute = new Set(
+          routeSnap.nodes.map(n => `${n.panelIdx}|${n.q},${n.r}`)
+        );
+        extrasSet = new Set([...baseSet].filter(k => !inRoute.has(String(k))));
+      }
 
-      const links = [];
-      const linkSeen = new Set();
-      const sigOf = (e) => {
-        if (!e) return '';
-        const t = e.type || 'link';
-        // 兼容两种结构：from/to 或 path[]
-        const fromKey = e.from?.key
-          || (Array.isArray(e.path) && e.path[0]?.key)
-          || (e.from ? `${e.from.panelIdx}:${e.from.q},${e.from.r}` : '');
-        const toKey = e.to?.key
-          || (Array.isArray(e.path) && e.path[e.path.length - 1]?.key)
-          || (e.to ? `${e.to.panelIdx}:${e.to.q},${e.to.r}` : '');
-        return `${t}|${fromKey}->${toKey}`;
-      };
-      const pushLink = (e) => {
-        const s = sigOf(e);
-        if (s && !linkSeen.has(s)) { linkSeen.add(s); links.push(e); }
-      };
-      (routeSnap.links || []).forEach(pushLink);
-      (keySnap.links || []).forEach(pushLink);
+      // 3) 用 keySet 切段，拿到额外的节点+边（含“孤点”→single）
+      const extrasSnap = snapshotFromKeySet(extrasSet || new Set());
 
-      // 4) meta 保持你的原样
+      // 4) 合并并去重（节点按 node.id 去重；边简单拼接即可，
+      //    extrasSnap 已经是从 keySet 切段生成，不会跟 routeSnap.links 冲突）
+      const nodeById = new Map();
+      (routeSnap.nodes || []).forEach(n => nodeById.set(n.id, n));
+      (extrasSnap.nodes || []).forEach(n => nodeById.set(n.id, n));
+
+      const nodes = [...nodeById.values()];
+      const links = [...(routeSnap.links || []), ...(extrasSnap.links || [])];
+
+      // 5) meta
       const focusId = App.selectedHex
         ? `${App.selectedHex.panelIdx}:${App.selectedHex.q},${App.selectedHex.r}`
         : null;
@@ -4634,6 +4623,7 @@ function exportMiniColorMaps() {
 
       return { nodes, links, meta: { focusId, miniPalette: mini } };
     },
+
 
 
       // ✅ 单独提供 getMiniColorMaps 给 MainView.vue 用
