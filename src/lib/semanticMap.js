@@ -631,46 +631,49 @@ function emitSelectionPayload(){
   }catch(e){ console.warn('emitSelectionPayload failed:', e); }
 }
 
-  function publishToStepAnalysis() {
-    try {
-     const nodes = buildSplitNodes();
- 
-     // 1) 路线级选择 → 分段导出
-     const hasRouteSel = App.selectedRouteIds && App.selectedRouteIds.size > 0;
-     const selectedRoutes = hasRouteSel
-       ? (App._lastLinks || []).filter(L => {
-           const id = (typeof linkKey === 'function') ? linkKey(L) : (L && (L.id || L._uid));
-           return id && App.selectedRouteIds.has(id);
-         })
-       : (App._lastLinks || []);
-     const linksA = buildSplitLinks(selectedRoutes);
- 
-     // 2) 点级选择（Ctrl 并/差集得到的 persistentHexKeys）→ 切段   单点，并与路线级结果合并
-     let links = linksA.slice();
-     if (App.persistentHexKeys && App.persistentHexKeys.size > 0 && typeof snapshotFromKeySet === 'function') {
-       const snap = snapshotFromKeySet(App.persistentHexKeys);
-       if (snap && Array.isArray(snap.links) && snap.links.length) {
-         // 用 from.key -> to.key 做签名去重，避免重复片段
-         const seen = new Set(linksA.map(e => `${e.type}|${e.from.key}->${e.to.key}`));
-         snap.links.forEach(e => {
-           const sig = `${e.type}|${e.from.key}->${e.to.key}`;
-           if (!seen.has(sig)) {
-             links.push(e);
-             seen.add(sig);
-           }
-         });
-       }
-     }
- 
-     if (typeof window !== 'undefined' && window.dispatchEvent) {
-       const ev = new CustomEvent('semantic-map-export', { detail: { nodes, links } });
-       window.dispatchEvent(ev);
-     }
-     App._exportSplit = { nodes, links };
-   } catch (e) {
-     console.warn('publishToStepAnalysis failed:', e);
-   }
- }
+
+function publishToStepAnalysis() {
+  try {
+    const nodesAll = buildSplitNodes();
+
+    // 1) 路线级选择 → 分段导出 linksA
+    const hasRouteSel = App.selectedRouteIds && App.selectedRouteIds.size > 0;
+    const selectedRoutes = hasRouteSel
+      ? (App._lastLinks || []).filter(L => {
+          const id = (typeof linkKey === 'function') ? linkKey(L) : (L && (L.id || L._uid));
+          return id && App.selectedRouteIds.has(id);
+        })
+      : (App._lastLinks || []);
+    const linksA = buildSplitLinks(selectedRoutes);
+
+    // 2) 点级 extras（persistentHexKeys）→ 切段 snap.links，并与 linksA 合并去重
+    let links = linksA.slice();
+    if (App.persistentHexKeys && App.persistentHexKeys.size > 0 && typeof snapshotFromKeySet === 'function') {
+      // 先把“已在路线里的节点”排除，避免重复片段
+      const inRoute = new Set();
+      (buildSplitNodes(selectedRoutes) || []).forEach(n => inRoute.add(`${n.panelIdx}|${n.q},${n.r}`));
+      const extras = new Set([...App.persistentHexKeys].filter(k => !inRoute.has(String(k))));
+
+      const snap = snapshotFromKeySet(extras);
+      if (snap && Array.isArray(snap.links) && snap.links.length) {
+        const seen = new Set(linksA.map(e => `${e.type}|${e.from.key}->${e.to.key}`));
+        snap.links.forEach(e => {
+          const sig = `${e.type}|${e.from.key}->${e.to.key}`;
+          if (!seen.has(sig)) { links.push(e); seen.add(sig); }
+        });
+      }
+    }
+
+    if (typeof window !== 'undefined' && window.dispatchEvent) {
+      const ev = new CustomEvent('semantic-map-export', { detail: { nodes: nodesAll, links } });
+      window.dispatchEvent(ev);
+    }
+    App._exportSplit = { nodes: nodesAll, links };
+  } catch (e) {
+    console.warn('publishToStepAnalysis failed:', e);
+  }
+}
+
 
 
 
@@ -1435,13 +1438,7 @@ function propagateCountryColorToAllPanels(countryId, color) {
     const alphaByKey = buildAlphaMapForPanelCountry(panelIdx, cid);
     perPanel.set(cid, { color, alphaByKey });
 
-    // （可选）与冲突色共存处理：把该国在该面板的 key 从“冲突覆盖”里摘掉，避免冲突色盖住国家色
-    const cov = App.panelConflictColors?.get?.(panelIdx);
-    if (cov?.alphaByKey instanceof Map) {
-      for (const k of alphaByKey.keys()) cov.alphaByKey.delete(k);
-      if (cov.alphaByKey.size === 0) App.panelConflictColors.delete(panelIdx);
-      else App.panelConflictColors.set(panelIdx, cov);
-    }
+    
   });
 
   // 3) 刷新
@@ -3334,7 +3331,7 @@ function updateHexStyles() {
       // —— 覆盖色（国家） —— //
       const countryOv = thisCid ? getCountryColorOverride(panelIdx, thisCid) : null;
       const confirmedCountryAlphaMap = countryOv?.alphaByKey || null;
-      const confirmedCountryColor =
+      let confirmedCountryColor =
         (countryOv?.color && confirmedCountryAlphaMap?.has?.(key))
           ? countryOv.color
           : null;
@@ -3352,6 +3349,12 @@ function updateHexStyles() {
 
       // —— 冲突优先：当 hex 是冲突时，用冲突覆盖 —— //
       const isConflict = isConflictHex(panelIdx, d.q, d.r);
+       // ★ 关键：一旦是冲突格，屏蔽国家覆盖色（无论预览还是确认）
+      if (isConflict) {
+        confirmedCountryColor = null;
+        previewColor = null;
+        previewAlpha = null;
+      }
       let confirmedConflictColor = null;
       let confirmedConflictAlphaMap = null;
       let previewConflictColor = null;
