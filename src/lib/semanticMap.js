@@ -1016,17 +1016,20 @@ function renderBucketTooltipHTML(bucket) {
       }
     }
 
-    // === 追加：冲突色的逐点覆盖（优先级最高） ===
+    // 4) 逐点填充（Alt 冲突色）：来自 App.panelConflictColors
     const fillByNode = {};
     if (App && App.panelConflictColors instanceof Map) {
-      App.panelConflictColors.forEach((rec, panelIdx) => {
-        const color = rec?.color;
+      App.panelConflictColors.forEach((rec /*, panelIdx */) => {
+        const fallback = (App.config?.background || '#ffffff');        // NEW: 底色兜底
+        const color = rec?.color ?? fallback;                           // NEW: 没配色也用底色
         const alphaByKey = rec?.alphaByKey;
-        if (!color || !(alphaByKey instanceof Map)) return;
-        alphaByKey.forEach((_, k) => {
-          const colonKey = String(k).replace('|', ':'); // "p:q,r"
-          // 只要在冲突 alpha 图里的点，一律用冲突统一色
-          fillByNode[colonKey] = color;
+        if (!(alphaByKey instanceof Map)) return;
+        alphaByKey.forEach((a, k) => {
+          const keyColon = _keyPipeToColon(k);
+          fillByNode[keyColon] = color;                                 // 覆盖国家色
+          if (typeof a === 'number' && a >= 0 && a <= 1) {              // NEW: 同步冲突透明度
+            alphaByNode[keyColon] = a;
+          }
         });
       });
     }

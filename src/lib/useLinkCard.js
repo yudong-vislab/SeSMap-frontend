@@ -220,15 +220,43 @@ export function mountMiniLink(
 
   return {
     update(next) {
-      render({
-        ...next,
-        normalizeCountryId: next?.normalizeCountryId || normalizeCountryId,
-        alphaByNode: next?.alphaByNode ?? alphaByNode,
-        defaultAlpha: next?.defaultAlpha ?? defaultAlpha,
-        borderColorByNode: next?.borderColorByNode ?? borderColorByNode,
-        borderWidthByNode: next?.borderWidthByNode ?? borderWidthByNode,
-        fillByNode: next?.fillByNode ?? fillByNode
-      });
+             // 覆盖闭包变量（render 里直接用到这些闭包变量）
+       if (next && Object.prototype.hasOwnProperty.call(next, 'fillByNode')) {
+         fillByNode = next.fillByNode;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'borderColorByNode')) {
+         borderColorByNode = next.borderColorByNode;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'borderWidthByNode')) {
+         borderWidthByNode = next.borderWidthByNode;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'alphaByNode')) {
+         alphaByNode = next.alphaByNode;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'defaultAlpha')) {
+         defaultAlpha = next.defaultAlpha;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'colorByCountry')) {
+         colorByCountry = next.colorByCountry;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'colorByPanelCountry')) {
+         colorByPanelCountry = next.colorByPanelCountry;
+       }
+       if (next && Object.prototype.hasOwnProperty.call(next, 'normalizeCountryId')) {
+         normalizeCountryId = next.normalizeCountryId;
+       }
+ 
+       render({
+         link: next?.link ?? link,
+         nodes: next?.nodes ?? nodes,
+         startCountMap: next?.startCountMap ?? startCountMap,
+         colorByCountry,
+         colorByPanelCountry,
+         normalizeCountryId,
+         alphaByNode,
+         defaultAlpha
+       });
+
     },
     destroy() { offHover && offHover(); }
   };

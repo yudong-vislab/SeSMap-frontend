@@ -74,47 +74,50 @@ let offSaved = null
 onMounted(() => {
   offSaved = onSelectionSaved((payload) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const nextIdx = steps.value.length + 1
-    const baseTitle = (payload.title || '').trim()
-    const finalTitle = baseTitle
-      ? `Step ${nextIdx} · ${baseTitle}`
-      : `Step ${nextIdx} · ${new Date(payload.createdAt || Date.now()).toLocaleTimeString()}`
+    const finalTitle = payload.title || `Step ${steps.value.length + 1}`
 
+    // ① 先拿 nodes / links
     const nodes = Array.isArray(payload.nodes) ? payload.nodes : []
     const links = Array.isArray(payload.links) ? payload.links : []
 
-    // —— NEW：按 HSU 分组 MSU，并按“路径顺序”排列 HSU —— //
+    // ② 再分组（如果你有这一步）
     const hsus = groupHSUs(nodes, links)
 
+    // ③ 取 mini 色板快照（多重兜底，保证拿到 fillByNode/alphaByNode）
+    const palette =
+      payload?.miniPalette
+      || payload?.meta?.miniPalette
+      || (window?.SemanticMap?.getMiniColorMaps?.() ?? null)
+      || (window?.App?.getMiniColorMaps?.() ?? null)
+      || (window?.App?.getSelectionSnapshot?.()?.meta?.miniPalette ?? null)
+
+    // ④ push；优先用 palette，其次 payload，最后兜底
     steps.value.push({
       id,
       title: finalTitle,
       createdAt: payload.createdAt || Date.now(),
       nodes,
       links,
-      startCountMap: buildStartCountMap(links),   // ★ 提前算好供子卡片用
-      colorByCountry: payload.colorByCountry || {},
-      colorByPanelCountry: payload.colorByPanelCountry || {},
-      normalizeCountryId: payload.normalizeCountryId || ((x) => x),
+      startCountMap: buildStartCountMap(links),
 
-      // ★★★ 新增：把透明度变成 node 粒度映射存起来
-      alphaByNode: payload.alphaByNode || {},  
-      // ★ 新增：逐节点边框 & Alt 冲突覆盖（逐点填充）
-      borderColorByNode: payload.borderColorByNode || {},
-      borderWidthByNode: payload.borderWidthByNode || {},
-      fillByNode: payload.fillByNode || {},
-      // 右侧文本区：按 HSU 分组后的 MSU 结构（含勾选位）
+      colorByCountry:      palette?.colorByCountry      ?? payload.colorByCountry      ?? {},
+      colorByPanelCountry: palette?.colorByPanelCountry ?? payload.colorByPanelCountry ?? {},
+      normalizeCountryId:  palette?.normalizeCountryId  ?? payload.normalizeCountryId  ?? ((x)=>x),
+
+      // 这里直接吃 mini 色板里的 alphaByNode / fillByNode（它已经包含冲突区逐点覆盖）
+      alphaByNode:         palette?.alphaByNode         ?? payload.alphaByNode         ?? {},
+      borderColorByNode:   palette?.borderColorByNode   ?? payload.borderColorByNode   ?? {},
+      borderWidthByNode:   palette?.borderWidthByNode   ?? payload.borderWidthByNode   ?? {},
+      fillByNode:          palette?.fillByNode          ?? payload.fillByNode          ?? {},
+
       hsus,
       rawText: payload.rawText || '',
       summary: payload.summary || '',
       meta: payload.meta || {}
     })
-    requestAnimationFrame(() => {
-      const el = stackRef.value
-      if (el) el.scrollTop = el.scrollHeight
-    })
   })
 })
+
 onBeforeUnmount(() => offSaved?.())
 
 /**

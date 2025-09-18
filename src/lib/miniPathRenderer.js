@@ -54,9 +54,17 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
 
 
   const idOf = (p,q,r) => `${p}:${q},${r}`;
-  const normalize = (cid) => cid; // 若你有同名函数可直接用
+ const normalize = typeof opts.normalizeCountryId === 'function'
+  ? opts.normalizeCountryId
+  : (cid) => cid;
 
   const resolveNodeColor = (n) => {
+    // ★ 优先：逐节点覆盖（冲突区 Alt 上色）
+    if (n) {
+      const nodeKey = `${n.panelIdx}:${n.q},${n.r}`; // 与 useLinkCard / 右卡一致的键
+      const nodeFill = pick(fillByNode, nodeKey);
+      if (nodeFill) return nodeFill;
+    }
     if (n && n.country_id != null && Number.isInteger(n.panelIdx)) {
       const key = `${n.panelIdx}|${normalize(n.country_id)}`;
       if (colorByPanelCountry && (key in colorByPanelCountry)) {
