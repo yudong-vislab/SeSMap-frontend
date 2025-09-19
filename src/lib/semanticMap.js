@@ -402,13 +402,6 @@ function emitHexClick(panelIdx, q, r, d) {
   }
 }
 
-// === Helpers: fully reset a subspace back to pristine ===
-function clearCountryLayers(panelIdx) {
-  const svg = App?.subspaceSvgs?.[panelIdx];
-  if (!svg) return;
-  // 根据你的工程里国家图层 class 做一次尽量稳健的清理
-  svg.selectAll('.country-layer, .country-boundary, .country-fill, .country-stroke').remove();
-}
 
 // === Helper: ensure hatch pattern exists (optional overlay for conflicts) ===
 function ensureHatchPattern(panelIdx, svg, color) {
@@ -432,6 +425,51 @@ function ensureHatchPattern(panelIdx, svg, color) {
     }
   } catch(e) {}
 }
+
+// 基于“原始 hexList”构建坐标索引：panelIdx -> Map("q,r" -> [多条记录])
+function ensureCoordIndex(panelIdx) {
+  if (!App.coordIndexByPanel) App.coordIndexByPanel = new Map();
+  let m = App.coordIndexByPanel.get(panelIdx);
+  if (m) return m;
+
+  m = new Map();
+  // 优先使用我们保存的“原始未去重列表”
+  const src = (Array.isArray(App._rawHexListByPanel?.[panelIdx]))
+    ? App._rawHexListByPanel[panelIdx]
+    : (App.currentData?.subspaces?.[panelIdx]?.hexList || []);
+
+  for (const it of src) {
+    if (!it) continue;
+    const key = `${it.q},${it.r}`;
+    let arr = m.get(key);
+    if (!arr) { arr = []; m.set(key, arr); }
+    arr.push(it);
+  }
+  App.coordIndexByPanel.set(panelIdx, m);
+  return m;
+}
+
+// 安全获取 bucket：优先用 getBucket；失败则从坐标索引兜底组一个“临时 bucket”
+function getBucketSafe(panelIdx, q, r) {
+  let b = (typeof getBucket === 'function') ? getBucket(panelIdx, q, r) : null;
+  if (b && Array.isArray(b.items) && b.items.length) return b;
+
+  const idx = ensureCoordIndex(panelIdx);
+  const items = (idx.get(`${q},${r}`) || []).slice();
+  if (!items.length) return null;
+
+  const normCid = (cid) =>
+    (typeof normalizeCountryId === 'function')
+      ? normalizeCountryId(cid || '')
+      : (cid || '');
+
+  const countries = new Set(
+    items.map(it => normCid(it.country_id)).filter(Boolean)
+  );
+
+  return { items, countries };
+}
+
 
 // === Tooltip: build single-item bucket for unified rendering ===
 function buildSingleBucket(panelIdx, q, r, hex) {
@@ -486,63 +524,6 @@ function computeHexBaseFill(panelIdx, q, r, modality) {
   return (App.config && App.config.background) || '#f5f5f5';
 }
 
-// === Tooltip (group-by-country), header only shows Countries ===
-function renderBucketTooltipHTML(bucket) {
-  if (!bucket) return '<i>No data</i>';
-  var panelIdx = bucket.panelIdx != null ? bucket.panelIdx : 0;
-
-  var groups = new Map();
-  for (var i=0;i<bucket.items.length;i++) {
-    var it = bucket.items[i] || {};
-    var cid = normalizeCountryId(it.country_id || '—');
-    var g = groups.get(cid);
-    if (!g) {
-      var col = getPanelCountryColor(panelIdx, cid);
-      g = { cid: cid, items: [], msuCount: 0, color: col };
-      groups.set(cid, g);
-    }
-    g.items.push(it);
-    if (Array.isArray(it.msu_ids)) g.msuCount += it.msu_ids.length;
-  }
-  var focusCid = App.focusCountryId ? normalizeCountryId(App.focusCountryId) : null;
-  var ordered = Array.from(groups.values()).sort(function(a,b){
-    if (focusCid) {
-      if (a.cid === focusCid && b.cid !== focusCid) return -1;
-      if (b.cid === focusCid && a.cid !== focusCid) return 1;
-    }
-    return (a.cid < b.cid) ? -1 : (a.cid > b.cid) ? 1 : 0;
-  });
-
-  var totalCountries = groups.size;
-  var html = '<div style="margin-bottom:6px;font-weight:600">'
-          + (totalCountries===1 ? '1 Country' : (totalCountries + ' Countries'))
-          + '</div>';
-
-  for (var gi=0; gi<ordered.length; gi++) {
-    var g = ordered[gi];
-    html += '<div style="display:flex;align-items:center;gap:8px;margin:.25em 0 .15em">'
-         +   '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
-         +   'background:'+g.color+';flex:none;border:1px solid rgba(255,255,255,0.25)"></span>'
-         +   '<b style="flex:none">['+ g.cid +']</b>'
-         +   '<span style="opacity:.9;flex:none">' + (g.msuCount===1?'1 MSU':(g.msuCount+' MSUs')) + '</span>'
-         + '</div>';
-    var maxLines = Math.min(g.items.length, 5);
-    for (var j=0; j<maxLines; j++) {
-      var it = g.items[j] || {};
-      var nmsu = Array.isArray(it.msu_ids) ? it.msu_ids.length : 0;
-      var sum  = (it && typeof it.summary === 'string') ? it.summary.trim() : '';
-      if (sum && sum.length > 180) sum = sum.slice(0, 180) + '…';
-      html += '<div style="margin-left:18px;margin-top:2px;opacity:.95">'
-           +   '<span style="opacity:.85"><b>#'+ (j+1) +'</b> · '+ (nmsu===1?'1 MSU':(nmsu+' MSUs')) +'</span>'
-           +   (sum ? ' — ' + sum : ' — <i>No summary</i>')
-           + '</div>';
-    }
-    if (g.items.length > maxLines) {
-      html += '<div style="margin-left:18px;opacity:.6">… and ' + (g.items.length - maxLines) + ' more</div>';
-    }
-  }
-  return '<div style="max-width:420px">' + html + '</div>';
-}
 
 // === Per-country split builders ===
 function _bucketCountrySlices(panelIdx, q, r) {
@@ -674,7 +655,56 @@ function publishToStepAnalysis() {
   }
 }
 
+// 从“当前子空间的原始列表”按坐标取出所有条目，并做一次规范化聚合
+function _gatherByCoordFromSubspace(panelIdx, q, r) {
+  // 1) 优先使用每个子空间的原始 hexList
+  const space = App?.currentData?.subspaces?.[panelIdx];
+  const list1 = Array.isArray(space?.hexList) ? space.hexList : [];
 
+  // 2) 如果你前面有保存过“未去重原始表”（推荐），也合并进来兜底
+  const list2 = Array.isArray(App?._rawHexListByPanel?.[panelIdx]) ? App._rawHexListByPanel[panelIdx] : [];
+
+  // 合并两个来源，但按引用去重
+  const all = [];
+  const seen = new Set();
+  for (const it of [...list1, ...list2]) {
+    if (!it || it.q !== q || it.r !== r) continue;
+    const key = it === Object(it) ? (it.__id || `${it.country_id}|${(it.msu_ids||[]).join(',')}`) : String(Math.random());
+    if (seen.has(key)) continue;
+    seen.add(key);
+    all.push(it);
+  }
+
+  // 规范化 country id（兼容别名）
+  const normCid = (cid) => (App?.countryIdAlias?.get?.(cid) || cid || '').toString();
+
+  // 分组与并集
+  const countries = new Set(all.map(it => normCid(it.country_id)).filter(Boolean));
+  const groupsMap = new Map();
+  for (const it of all) {
+    const cid = normCid(it.country_id) || '—';
+    if (!groupsMap.has(cid)) groupsMap.set(cid, { items: [], msu_ids: [] });
+    const g = groupsMap.get(cid);
+    g.items.push(it);
+    if (Array.isArray(it.msu_ids)) g.msu_ids.push(...it.msu_ids);
+  }
+
+  const merged_msu_ids = Array.from(new Set([].concat(...Array.from(groupsMap.values()).map(g => g.msu_ids))));
+
+  // 代表项（用第一条，避免破坏既有 UI 依赖）
+  const first = all[0] || {};
+  return {
+    ok: all.length > 0,
+    items: all,
+    countries,
+    groupsMap,
+    merged_msu_ids,
+    representative: {
+      modality: first.modality || '',
+      label: first.label || `${q},${r}`
+    }
+  };
+}
 
 
 // === Buckets helpers (aggregate multiple records in one hex) ===
@@ -751,18 +781,6 @@ function getBucket(panelIdx, q, r) {
   return map ? map.get(String(q)+','+String(r)) : null;
 }
 
-function pickItemFromBucket(bucket) {
-  if (!bucket || !bucket.items || bucket.items.length === 0) return null;
-  var focusCid = App.focusCountryId ? normalizeCountryId(App.focusCountryId) : null;
-  if (focusCid) {
-    for (var i=0;i<bucket.items.length;i++) {
-      var it = bucket.items[i];
-      if (normalizeCountryId(it && it.country_id ? it.country_id : '') === focusCid) return it;
-    }
-  }
-  var idx = bucket._cycleIdx || 0;
-  return bucket.items[idx % bucket.items.length];
-}
 
 function renderBucketTooltipHTML(bucket) {
   if (!bucket) return '<i>No data</i>';
@@ -819,7 +837,7 @@ function renderBucketTooltipHTML(bucket) {
       var it = g.items[j] || {};
       var nmsu = Array.isArray(it.msu_ids) ? it.msu_ids.length : 0;
       var sum  = (it && typeof it.summary === 'string') ? it.summary.trim() : '';
-      if (sum && sum.length > 180) sum = sum.slice(0, 180) + '…';
+      // if (sum && sum.length > 180) sum = sum.slice(0, 180) + '…'; 完整MSU
       html += '<div style="margin-left:18px;margin-top:2px;opacity:.95">'
            
            +   (sum ? 'Summary: <i>' + sum + '</i>': '<i>No summary</i>')
@@ -1392,11 +1410,9 @@ function getConflictColorOverride(panelIdx) {
   return App.panelConflictColors?.get(panelIdx) || null;
 }
 
-// —— 统一的内部归一化 —— //
+// —— 工具：规范化国家 ID（含别名） ——
 function _normCid(cid) {
-  try {
-    return (typeof normalizeCountryId === 'function') ? normalizeCountryId(cid) : cid;
-  } catch { return cid; }
+  return (App?.countryIdAlias?.get?.(cid) || cid || '').toString();
 }
 
 // ★ 新增：为“某面板 + 某国家”的全部 hex 重建 alphaMap（遵循你现有的 MSU → 透明度逻辑）
@@ -3631,33 +3647,131 @@ function updateHexStyles() {
       });
     }
 
+  // 在当前子空间中，按 (q,r) 收集并合并所有记录
+  // —— 工具：多路兜底的“按子空间 + 坐标”聚合器 ——
+  function _gatherAt(panelIdx, q, r) {
+    const key = `${q},${r}`;
+    let items = [];
+
+    // 1) 直接从 buckets 取（如果你在 render 阶段已经 buildBuckets）
+    try {
+      const m = App?.hexBucketsByPanel?.[panelIdx];
+      const b = m && typeof m.get === 'function' ? m.get(key) : null;
+      if (b && Array.isArray(b.items) && b.items.length) items = items.concat(b.items);
+    } catch (e) {}
+
+    // 2) getBucket 函数（有就用）
+    try {
+      if (!items.length && typeof getBucket === 'function') {
+        const b = getBucket(panelIdx, q, r);
+        if (b && Array.isArray(b.items) && b.items.length) items = items.concat(b.items);
+      }
+    } catch (e) {}
+
+    // 3) 你的“原始未去重列表”备份
+    try {
+      const raw = App?._rawHexListByPanel?.[panelIdx];
+      if (Array.isArray(raw)) {
+        items = items.concat(raw.filter(it => it && it.q === q && it.r === r));
+      }
+    } catch (e) {}
+
+    // 4) 当前子空间的 hexList（有些项目会被覆盖成“唯一代表”，但也兜底尝试）
+    try {
+      const list = App?.currentData?.subspaces?.[panelIdx]?.hexList || [];
+      if (Array.isArray(list)) {
+        items = items.concat(list.filter(it => it && it.q === q && it.r === r));
+      }
+    } catch (e) {}
+
+    // 5) 其它你项目里常见的缓存（可能已去重，作为最后兜底）
+    try {
+      const all = App?.allHexDataByPanel?.[panelIdx] || [];
+      if (Array.isArray(all)) {
+        items = items.concat(all.filter(it => it && it.q === q && it.r === r));
+      }
+    } catch (e) {}
+
+    // —— 去掉完全重复（以 “country+msu_ids+modality” 作为签名） ——
+    const seen = new Set();
+    const uniq = [];
+    for (const it of items) {
+      if (!it) continue;
+      const sig = `${_normCid(it.country_id)}|${Array.isArray(it.msu_ids) ? it.msu_ids.join(',') : ''}|${it.modality || ''}`;
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      uniq.push(it);
+    }
+
+    if (!uniq.length) return { ok: false };
+
+    // 国家集合
+    const countries = new Set(uniq.map(it => _normCid(it.country_id)).filter(Boolean));
+
+    // 合并 msu 并去重
+    const merged_msu_ids = Array.from(new Set(
+      uniq.flatMap(it => Array.isArray(it.msu_ids) ? it.msu_ids : [])
+    ));
+
+    // 分国明细（给右侧等用）
+    const groupsMap = new Map();
+    for (const it of uniq) {
+      const cid = _normCid(it.country_id) || '—';
+      if (!groupsMap.has(cid)) groupsMap.set(cid, { items: [], msu_ids: [] });
+      const g = groupsMap.get(cid);
+      g.items.push(it);
+      if (Array.isArray(it.msu_ids)) g.msu_ids.push(...it.msu_ids);
+    }
+    for (const [, g] of groupsMap) g.msu_ids = Array.from(new Set(g.msu_ids));
+
+    const first = uniq[0] || {};
+    return {
+      ok: true,
+      items: uniq,
+      countries,
+      merged_msu_ids,
+      groupsMap,
+      representative: {
+        modality: first.modality || '',
+        label: first.label || key
+      }
+    };
+  }
+ 
   function snapshotFromKeySet(keySet) {
     if (!keySet || keySet.size === 0) return { nodes: [], links: [] };
 
     const nodes = [];
     for (const k of keySet) {
-      const [pStr, qr] = k.split('|');
+      const [pStr, qr] = String(k).split('|');
       const [qStr, rStr] = qr.split(',');
-      const panelIdx = +pStr, q = +qStr, r = +rStr;
-      const hex = App.hexMapsByPanel[panelIdx]?.get(`${q},${r}`);
-      if (!hex) continue;
-      const msu_ids = Array.isArray(hex.msu_ids) ? hex.msu_ids : [];
-      const msu = resolveMSUs(msu_ids);
+      const panelIdx = parseInt(pStr, 10);
+      const q = parseInt(qStr, 10);
+      const r = parseInt(rStr, 10);
+
+      // ★ 直接用多路兜底聚合器（不会被“最上层覆盖”影响）
+      const agg = _gatherAt(panelIdx, q, r);
+      if (!agg.ok) continue;
+
+      const modality   = agg.representative.modality;
+      const label      = agg.representative.label;
+      const country_id = (agg.countries.size === 1) ? Array.from(agg.countries)[0] : null; // 多国 → null
+      const msu_ids    = agg.merged_msu_ids;
+      const msu        = (typeof resolveMSUs === 'function') ? resolveMSUs(msu_ids) : msu_ids;
+
       nodes.push({
         id: `${panelIdx}:${q},${r}`,
         panelIdx, q, r,
-        label: hex.label || `${q},${r}`,
-        modality: hex.modality || '',
-        country_id: hex.country_id || null,
-        msu_ids,            // ★ FIX
-        msu                 // ★ FIX
+        label, modality, country_id,
+        msu_ids, msu,
+        conflict: agg.countries.size > 1
       });
-
     }
 
+    // ===== 下面是你原来的“切段生成 links”逻辑，保持不变 =====
     const links = [];
     const inSet = (p) => keySet.has(`${p.panelIdx}|${p.q},${p.r}`);
-    const usedKeys = new Set(); // 被任何“片段”消费的点
+    const usedKeys = new Set();
 
     for (const e of (App._lastLinks || [])) {
       const rawPts = Array.isArray(e.path) ? e.path : [];
@@ -3666,14 +3780,13 @@ function updateHexStyles() {
         panelIdx: resolvePanelIdxForPathPoint(p, e, i), q: p.q, r: p.r
       }));
 
-      // 按“在选集中”的连续片段切
       let run = [];
       const flush = () => {
         if (run.length >= 2) {
           run.forEach(pt => usedKeys.add(`${pt.panelIdx}|${pt.q},${pt.r}`));
           const panels = Array.from(new Set(run.map(pt => pt.panelIdx)));
           const panelNames = panels.map(idx => App.currentData?.subspaces?.[idx]?.subspaceName || `Subspace ${idx+1}`);
-          const first = run[0], last = run[run.length-1];
+          const first = run[0], last = run[run.length - 1];
           links.push({
             id: `${e.type || 'road'}:${first.panelIdx}:${first.q},${first.r}->${last.panelIdx}:${last.q},${last.r}`,
             type: e.type || 'road',
@@ -3683,20 +3796,23 @@ function updateHexStyles() {
         }
         run = [];
       };
-
       for (let i = 0; i < norm.length; i++) {
-        if (inSet(norm[i])) run.push(norm[i]); else flush();
+        const pt = norm[i];
+        if (inSet(pt)) run.push(pt); else flush();
       }
       flush();
     }
 
-    // 把未被任何片段消费的“孤点”也作为单点 link 传出去
-    for (const k of keySet) {
-      if (usedKeys.has(k)) continue;
-      const [pStr, qr] = k.split('|'); const [qStr, rStr] = qr.split(',');
-      const panelIdx = parseInt(pStr, 10); const q = parseInt(qStr, 10); const r = parseInt(rStr, 10);
+    // “孤点” single（保持原行为）
+    for (const key of keySet) {
+      if (usedKeys.has(String(key))) continue;
+      const [pStr, qr] = String(key).split('|');
+      const [qStr, rStr] = qr.split(',');
+      const panelIdx = parseInt(pStr, 10);
+      const q = parseInt(qStr, 10);
+      const r = parseInt(rStr, 10);
       const panels = [panelIdx];
-      const panelNames = [App.currentData?.subspaces?.[panelIdx]?.subspaceName || `Subspace ${panelIdx+1}`];
+      const panelNames = [App.currentData?.subspaces?.[panelIdx]?.subspaceName || `Subspace ${panelIdx + 1}`];
       links.push({
         id: `single:${panelIdx}:${q},${r}`,
         type: 'single',
@@ -3743,32 +3859,66 @@ function updateHexStyles() {
       }
     });
 
-    // nodes：从 nodesSet 萃取
+    // nodes：从 nodesSet 萃取（改为“并集版”）
     const nodes = [];
     nodesSet.forEach(k => {
       const [pStr, qr] = k.split('|');
       const [qStr, rStr] = qr.split(',');
       const panelIdx = +pStr, q = +qStr, r = +rStr;
-      const hex = App.hexMapsByPanel[panelIdx]?.get(`${q},${r}`);
+
+      // 优先：拿聚合后的 bucket（保证包含同一格的多条记录）
+      const bucket = (typeof getBucketSafe === 'function')
+        ? getBucketSafe(panelIdx, q, r)
+        : (typeof getBucket === 'function' ? getBucket(panelIdx, q, r) : null);
+
+      if (bucket && Array.isArray(bucket.items) && bucket.items.length) {
+        const items = bucket.items;
+        const modality = items[0]?.modality || '';
+        const label    = items[0]?.label || `${q},${r}`;
+        const countries = bucket.countries && bucket.countries.size
+          ? bucket.countries
+          : new Set(items.map(it => (typeof normalizeCountryId === 'function' ? normalizeCountryId(it?.country_id) : it?.country_id)).filter(Boolean));
+        const country_id = (countries.size === 1) ? Array.from(countries)[0] : null;
+
+        const msu_ids = Array.from(new Set(
+          items.flatMap(it => Array.isArray(it?.msu_ids) ? it.msu_ids : [])
+        ));
+        const msu = (typeof resolveMSUs === 'function') ? resolveMSUs(msu_ids) : msu_ids;
+
+        nodes.push({
+          id: `${panelIdx}:${q},${r}`,
+          panelIdx, q, r,
+          label, modality, country_id,
+          msu_ids, msu,
+          conflict: countries.size > 1
+        });
+        return; // 已经用 bucket 成功聚合，提前返回
+      }
+
+      // 兜底：仍然保留原来的“顶层单条”逻辑，避免没有 bucket 时直接丢数据
+      const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${q},${r}`);
       if (hex) {
         const msu_ids = Array.isArray(hex.msu_ids) ? hex.msu_ids : [];
-        const msu = resolveMSUs(msu_ids);
+        const msu = (typeof resolveMSUs === 'function') ? resolveMSUs(msu_ids) : msu_ids;
         nodes.push({
           id: `${panelIdx}:${q},${r}`,
           panelIdx, q, r,
           label: hex.label || `${q},${r}`,
           modality: hex.modality || '',
           country_id: hex.country_id || null,
-          msu_ids,            // ★ FIX
-          msu                 // ★ FIX
+          msu_ids,
+          msu,
+          conflict: false
         });
       }
     });
+
 
     // 若完全没有选中路线（比如只点了一个且被排除），退回原有方案
     if (!linksOut.length && nodes.length) {
       return snapshotFromKeySet(App.persistentHexKeys);
     }
+    console.log( nodes, linksOut );
     return { nodes, links: linksOut };
   }
 
@@ -4547,7 +4697,6 @@ function exportMiniColorMaps() {
       if (!App.currentData) App.currentData = { subspaces: [], links: [] };
       const newIndex = App.currentData.subspaces.length;
 
-      // 初始化面板状态
       if (!Array.isArray(App.panelStates)) App.panelStates = [];
       App.panelStates.push({});
 
@@ -4557,13 +4706,21 @@ function exportMiniColorMaps() {
         countries: Array.isArray(space.countries) ? space.countries : []
       };
       App.currentData.subspaces.push(newSpace);
+
+      // ★ 保存“原始 hexList”（未去重）
+      if (!Array.isArray(App._rawHexListByPanel)) App._rawHexListByPanel = [];
+      App._rawHexListByPanel[newIndex] = Array.isArray(newSpace.hexList) ? newSpace.hexList.slice() : [];
+
       createSubspaceElement(newSpace, newIndex);
       renderHexGridFromData(newIndex, newSpace, App.config.hex.radius);
+
+      // 可选：预建一次坐标索引
+      ensureCoordIndex(newIndex);
+
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
       updateHexStyles();
       observePanelResize();
-      applyResponsiveLayout(true);     // ← 新增：加了卡片要重排
-
+      applyResponsiveLayout(true);
     },
     setOnSubspaceRename(fn) {
       App.onSubspaceRename = typeof fn === 'function' ? fn : null;
@@ -4643,18 +4800,39 @@ function exportMiniColorMaps() {
       },
 
       // ★ FIX: 通过坐标直接拿该格完整信息
+      // ★ 改为“按 bucket 聚合”的版本：冲突格返回并集（不再只取最上层 country）
+      // ★ 通过坐标拿该格“并集版”详情（含每国分组与 MSU 并集）
       getHexDetail(panelIdx, q, r) {
+        // 先试用多路兜底聚合器（你文件中已有 _gatherAt；若不存在就用 getBucketSafe）
+        const agg = (typeof _gatherAt === 'function') ? _gatherAt(panelIdx, q, r) : null;
+        if (agg && agg.items && agg.items.length) {
+          const modality   = agg.representative.modality;
+          const label      = agg.representative.label;
+          const country_id = (agg.countries.size === 1) ? Array.from(agg.countries)[0] : null;
+          const msu_ids    = agg.merged_msu_ids;
+          const msu        = (typeof resolveMSUs === 'function') ? resolveMSUs(msu_ids) : msu_ids;
+          const groups     = Array.from(agg.groupsMap.entries()).map(([cid, g]) => ({
+            country_id: cid,
+            items: g.items,
+            msu_ids: g.msu_ids,
+            msu: (typeof resolveMSUs === 'function') ? resolveMSUs(g.msu_ids) : g.msu_ids
+          }));
+          return { panelIdx, q, r, modality, country_id, label, msu_ids, msu, groups, conflict: agg.countries.size > 1 };
+        }
+
+        // 兜底：单条顶层
         const hex = App.hexMapsByPanel?.[panelIdx]?.get(`${q},${r}`);
         if (!hex) return null;
         const msu_ids = Array.isArray(hex.msu_ids) ? hex.msu_ids : [];
-        const msu = resolveMSUs(msu_ids);
+        const msu = (typeof resolveMSUs === 'function') ? resolveMSUs(msu_ids) : msu_ids;
         return {
           panelIdx, q, r,
           modality: hex.modality || '',
           country_id: hex.country_id || null,
           label: hex.label || `${q},${r}`,
-          msu_ids,
-          msu
+          msu_ids, msu,
+          groups: [],
+          conflict: false
         };
       },
 
