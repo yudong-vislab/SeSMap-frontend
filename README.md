@@ -1,4 +1,4 @@
-## KnowledgeSubspace-frontend
+# KnowledgeSubspace-frontend
 
 A Vue-based hex-map visualization for multi-subspace semantic analysis.
 It renders countries and conflict regions on a hex grid, supports interactive selection (click/drag/route/flight), and shows per-cell tooltips listing all MSUs present in that HSU.
@@ -24,20 +24,19 @@ D3.js for hex rendering
 Plain JS utilities (src/lib/semanticMap.js)
 
 Quick Start
-# Install dependencies
+## Install dependencies
 npm install
 
-# Start dev server (hot reload)
+## Start dev server (hot reload)
 npm run dev
 
 
 Open the URL shown in your terminal (usually http://localhost:5173).
 
-Build & Preview
-# Production build
+## Production build
 npm run build
 
-# Preview the production build
+## Preview the production build
 npm run preview
 
 Minimal Project Structure
