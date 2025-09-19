@@ -192,8 +192,8 @@ function onSave() {
 
 /* 活动态（绿色） */
 .mode-btn.is-active{
-  background:#3b82f6;      /* 绿色 */
-  border-color:#3b82f6;
+  background:#111;      /* 绿色 */
+  border-color:#111;
   color:#fff; opacity:1;
 }
 

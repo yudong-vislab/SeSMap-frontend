@@ -43,6 +43,7 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
   const fillByNode = opts.fillByNode || null;
   const defaultAlpha = (typeof opts.defaultAlpha === 'number') ? opts.defaultAlpha : 1;
 
+
   // 如果你文件里还没有 pick 辅助函数，加一个非常小的：
   const pick = (mapLike, key) => {
     if (!mapLike) return null;
@@ -53,10 +54,36 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
   };
 
 
+    // 兼容 ":" / "|"
+    function pickAlpha(mapLike, id) {
+      if (!mapLike) return null;
+      const cands = [id];
+      if (typeof id === 'string') {
+        if (id.includes(':')) cands.push(id.replace(':', '|'));
+        if (id.includes('|')) cands.push(id.replace('|', ':'));
+      }
+      for (const k of cands) {
+        if (mapLike instanceof Map) {
+          if (mapLike.has(k)) return mapLike.get(k);
+          if (mapLike.has(String(k))) return mapLike.get(String(k));
+        } else if (typeof mapLike === 'object') {
+          if (k in mapLike) return mapLike[k];
+          if (String(k) in mapLike) return mapLike[String(k)];
+        }
+      }
+      return null;
+    }
+
+    const baseAlphaOf = (id) => {
+      const v = pickAlpha(alphaByNode, id);
+      if (typeof v === 'number' && v >= 0 && v <= 1) return v;
+      return (defaultAlpha != null) ? defaultAlpha : 1;
+    };
+
   const idOf = (p,q,r) => `${p}:${q},${r}`;
- const normalize = typeof opts.normalizeCountryId === 'function'
-  ? opts.normalizeCountryId
-  : (cid) => cid;
+  const normalize = typeof opts.normalizeCountryId === 'function'
+    ? opts.normalizeCountryId
+    : (cid) => cid;
 
   const resolveNodeColor = (n) => {
     // ★ 优先：逐节点覆盖（冲突区 Alt 上色）
@@ -149,26 +176,34 @@ export function renderMiniPath(svgEl, link, nodes, opts = {}) {
   g.selectAll('g.hex')
     .data(coords, d => idOf(d.panelIdx, d.q, d.r))
     .join(enter => {
-      const gg = enter.append('g').attr('class', 'hex')
+      const gg = enter.append('g')
+        .attr('class', 'hex')
         .attr('transform', d => `translate(${d.x},${d.y})`);
+
       gg.append('path')
+        .attr('class', 'hex')
         .attr('d', hexD)
         .attr('fill', d => {
-          const n = nodeMap.get(idOf(d.panelIdx,d.q,d.r));
-          return colorOfNode(n);              // 你原来的颜色解析保持不变
+          const n = nodeMap.get(idOf(d.panelIdx, d.q, d.r));
+          return colorOfNode(n);
         })
-        .attr('fill-opacity', d => {          // ★ NEW：节点透明度
-          const key = idOf(d.panelIdx, d.q, d.r);      // "panelIdx:q,r"
-          const a = pick(alphaByNode, key);
-          return (typeof a === 'number' && a >= 0 && a <= 1) ? a : defaultAlpha;
+        .attr('fill-opacity', d => baseAlphaOf(idOf(d.panelIdx, d.q, d.r))) // 只对填充用外部 alpha
+        .attr('stroke', '#ffffff')
+        .attr('stroke-opacity', 1);
+
+      gg.append('g')
+        .attr('class', 'city-wrap')
+        .each(function(d){
+          const count = isSingleCard ? 0 : (startCountMap.get(idOf(d.panelIdx, d.q, d.r)) || 0);
+          drawCityOrCapital(d3.select(this), count);
         })
-        .attr('stroke', d => pick(borderColorByNode, idOf(d.panelIdx, d.q, d.r)) || '#ffffff')
-        .attr('stroke-width', d => {
-            const w = pick(borderWidthByNode, idOf(d.panelIdx, d.q, d.r));
-            return (Number.isFinite(w) ? w : 1);
-          })
+        .attr('opacity', 1);
+
       return gg;
     });
+
+
+
 }
 
 

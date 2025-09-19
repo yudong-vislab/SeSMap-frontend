@@ -14,7 +14,9 @@ const STYLE = {
   RIVER:  { stroke:'#8fbadf', width:1.4, dash:null,  opacity:0.95 },
   FLIGHT: { stroke:'#4a5f7e', width:1.4, dash:'4,4', opacity:0.95 },
   CITY: { r: 2.6, fill: '#ffffff', capitalInnerFill: '#000000', stroke: '#777777', strokeWidth: 1.0 },
-  HOVER_DIM: 0.25
+  HOVER_DIM: 0.25,        // 保留，当前不用于 hover 衰减
+  SELECT_DIM: 0.10        // ★ 选中时非当前节点的衰减系数
+
 };
 
 const hexPathD = (r) => {
@@ -34,6 +36,28 @@ function pick(mapLike, key) {
   if (typeof mapLike === 'object') return (mapLike[k1] ?? mapLike[k2] ?? null);
   return null;
 }
+
+// 同时兼容 "panelIdx:q,r" 与 "panelIdx|q,r"
+function pickAlpha(mapLike, id) {
+  if (!mapLike) return null;
+  const candidates = [id];
+  // 形如 "1:0,-4" ↔ "1|0,-4"
+  if (typeof id === 'string') {
+    if (id.includes(':')) candidates.push(id.replace(':', '|'));
+    if (id.includes('|')) candidates.push(id.replace('|', ':'));
+  }
+  for (const k of candidates) {
+    if (mapLike instanceof Map) {
+      if (mapLike.has(k)) return mapLike.get(k);
+      if (mapLike.has(String(k))) return mapLike.get(String(k));
+    } else if (typeof mapLike === 'object') {
+      if (k in mapLike) return mapLike[k];
+      if (String(k) in mapLike) return mapLike[String(k)];
+    }
+  }
+  return null;
+}
+
 
 /** 节点着色：先 panel+country 覆盖 → 再全局 country → 最后 modality 回退 */
 function resolveNodeColor(
@@ -113,28 +137,59 @@ export function mountMiniLink(
     defaultAlpha = 1,                 // ★ NEW
     borderColorByNode = null,   // ★ 新增：逐节点边框色
     borderWidthByNode = null,   // ★ 新增：逐节点边框宽
-    fillByNode = null           // ★ 新增：逐节点填充色（Alt 冲突）
+    fillByNode = null,          // ★ 新增：逐节点填充色（Alt 冲突）
+    onPick = null,              // ★ 新增：点击回调，参数为 "panelIdx:q,r" 或 null
+    pickedId = null            // ★ NEW: 外部可同步选中 id（"panelIdx:q,r"）
   }
 ) {
   const svg = d3.select(svgEl);
   const hexD = hexPathD(STYLE.HEX_R);
   let offHover = null;
   let hoveredId = null;
+  let selectedId = pickedId || null;   // ★ NEW: 内部选中状态
+  let visibleIds = new Set();          // ★ NEW: 本卡可见节点 id
+
+  const baseAlphaOf = (id) => {
+    const v = pickAlpha(alphaByNode, id);
+    if (typeof v === 'number' && v >= 0 && v <= 1) return v;
+    return (defaultAlpha != null) ? defaultAlpha : 1;
+  };
 
   function applyHover(id) {
-    hoveredId = id;
+    if (selectedId) return; // 选中时忽略 hover 透明度变化
+    hoveredId = (id && visibleIds.has(id)) ? id : null;
+
     const nodesSel = svg.selectAll('g.node');
-    if (!hoveredId) {
-      nodesSel.attr('opacity', 1);
-      // 离开 hover：让连线层浮回顶部
-      svg.select('.links-layer').raise();
-    } else {
-      nodesSel.attr('opacity', function(){ 
-        return this.dataset.id === hoveredId ? 1 : STYLE.HOVER_DIM; 
+    nodesSel.classed('hovered', d => !!hoveredId && d._id === hoveredId);
+
+    if (hoveredId) svg.select('.nodes-layer').raise();
+    else svg.select('.links-layer').raise();
+  }
+
+  function applyPicked() {
+    const nodesSel = svg.selectAll('g.nodes-layer g.node');
+    const hasPick = !!selectedId;
+
+    nodesSel
+      .classed('picked', d => hasPick && d._id === selectedId)
+      .each(function(d) {
+        const sel  = d3.select(this);
+        const base = baseAlphaOf(d._id);
+        const hex  = sel.select('path.hex');
+        const city = sel.select('.city-wrap');
+
+        if (!hasPick || d._id === selectedId) {
+          // 初始/恢复 或 选中本节点
+          hex.attr('fill-opacity', base)
+            .attr('stroke-opacity', 1);
+          city.attr('opacity', 1);
+        } else {
+          // 非选中
+          hex.attr('fill-opacity', base * 0.1)
+            .attr('stroke-opacity', 0.1);
+          city.attr('opacity', 0.1);
+        }
       });
-      // 进入 hover：让节点层浮到最上面（盖住虚线）
-      svg.select('.nodes-layer').raise();
-    }
   }
 
   function render({
@@ -154,6 +209,8 @@ export function mountMiniLink(
     const coords = path.map((p, i) => ({
       ...p, x: STYLE.PADX + i * STYLE.DX, y: yMid, _id: idOf(p.panelIdx, p.q, p.r)
     }));
+    // 记录当前卡片内的节点 id
+    visibleIds = new Set(coords.map(d => d._id));
 
     const lastX = coords[coords.length - 1].x;
     const contentW = lastX + STYLE.PADX + STYLE.HEX_R * 1.2;
@@ -168,6 +225,7 @@ export function mountMiniLink(
     gNodes.selectAll('g.node')
       .data(coords, d => d._id)
       .join(enter => {
+        // enter:
         const gg = enter.append('g')
           .attr('class', 'node')
           .attr('data-id', d => d._id)
@@ -178,26 +236,41 @@ export function mountMiniLink(
           .attr('class', 'hex')
           .attr('d', hexD)
           .attr('fill', d => resolveNodeColor(nodeMap.get(d._id), { colorByCountry, colorByPanelCountry, normalizeCountryId, fillByNode }))
-
-          .attr('fill-opacity', d => {                      // ★ NEW：节点透明度
-            const a = pick(alphaByNode, d._id);
-            return (typeof a === 'number' && a >= 0 && a <= 1) ? a : defaultAlpha;
-          })
+          .attr('fill-opacity', d => baseAlphaOf(d._id))   // ← 只给填充套外部透明度
           .attr('stroke', d => pick(borderColorByNode, d._id) || '#ffffff')
+          .attr('stroke-opacity', 1)                        // ← 描边固定为 1（不被整体 opacity 影响）
           .attr('stroke-width', d => {
-              const w = pick(borderWidthByNode, d._id);
-              return (Number.isFinite(w) ? w : 1);
-            })
+            const w = pick(borderWidthByNode, d._id);
+            return (Number.isFinite(w) ? w : 1);
+          });
 
         gg.append('g')
           .attr('class', 'city-wrap')
           .each(function(d){
             const count = isSingleCard ? 0 : (startCountMap.get(d._id) || 0);
             drawCityOrCapital(d3.select(this), count);
-          });
+          })
+          .attr('opacity', 1);                               // ← city 默认 1
 
-        gg.on('mouseenter', (_, d) => emitRightHover(d._id))
-          .on('mouseleave', () => emitRightHover(null));
+
+        gg.on('mouseenter', (_, d) => {
+             emitRightHover(d._id);
+             // ★ 有选中时，hover 不改变视觉（仅发事件/联动）
+             if (!selectedId) applyHover(d._id);
+           })
+           .on('mouseleave', () => {
+             emitRightHover(null);
+             if (!selectedId) applyHover(null);
+           })
+
+           // ★ 新增：点击该 HSU → 通知外部筛选该节点
+           .on('click', (evt, d) => {
+             evt.stopPropagation();
+             selectedId = d._id;
+             applyPicked();
+             if (typeof onPick === 'function') onPick(d._id);
+           });
+
         return gg;
       });
 
@@ -206,9 +279,21 @@ export function mountMiniLink(
       .attr('points', coords.map(d => `${d.x},${d.y}`).join(' '))
       .attr('fill', 'none').attr('stroke', s.stroke)
       .attr('stroke-width', s.width).attr('stroke-opacity', s.opacity)
-      .attr('stroke-dasharray', s.dash);
+      .attr('stroke-dasharray', s.dash)
+      .style('pointer-events','none'); // ★ 让背景能接收到 click，用于“清除筛选”
+ 
+      // ★ 背景点击 = 清除筛选（恢复显示全部 MSU）
+      svg.on('click', () => {
+       selectedId = null;
+       if (typeof onPick === 'function') onPick(null);
+       // 清除后恢复 hover 样式/默认透明度
+       applyHover(null);
+       applyPicked();
 
-    applyHover(hoveredId);
+      });
+      // 初始渲染：若有选中则应用选中样式；否则按 hover 恢复
+      if (selectedId) applyPicked();
+      else applyHover(hoveredId);
   }
 
   render({
@@ -220,7 +305,15 @@ export function mountMiniLink(
 
   return {
     update(next) {
-             // 覆盖闭包变量（render 里直接用到这些闭包变量）
+       // 外部可同步选中的 pickedId
+       if (next && Object.prototype.hasOwnProperty.call(next, 'pickedId')) {
+         selectedId = next.pickedId || null;
+       }
+
+       if (next && Object.prototype.hasOwnProperty.call(next, 'onPick')) {
+         onPick = next.onPick;
+       }
+       // 覆盖闭包变量（render 里直接用到这些闭包变量）
        if (next && Object.prototype.hasOwnProperty.call(next, 'fillByNode')) {
          fillByNode = next.fillByNode;
        }
@@ -256,7 +349,8 @@ export function mountMiniLink(
          alphaByNode,
          defaultAlpha
        });
-
+      // 更新后应用一次选中样式
+      applyPicked();
     },
     destroy() { offHover && offHover(); }
   };

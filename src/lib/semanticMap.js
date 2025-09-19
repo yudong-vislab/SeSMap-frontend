@@ -426,6 +426,85 @@ function ensureHatchPattern(panelIdx, svg, color) {
   } catch(e) {}
 }
 
+// —— 颜色工具：把输入安全规范成 "#RRGGBB" ——
+
+// 把 0-255 的 r,g,b 转成 "#RRGGBB"
+function _rgbToHex(r, g, b) {
+  const to2 = (n) => {
+    const v = Math.max(0, Math.min(255, n|0));
+    return v.toString(16).padStart(2, '0').toUpperCase();
+  };
+  return `#${to2(r)}${to2(g)}${to2(b)}`;
+}
+
+// 尝试把任意形式的颜色转成 "#RRGGBB"
+function normalizeColorToHex(color, fallback = '#A9D08D') {
+  try {
+    // 1) null/undefined：直接回退
+    if (color == null) return fallback;
+
+    // 2) 数组/对象：常见 {r,g,b} 或 [r,g,b]
+    if (Array.isArray(color) && color.length >= 3) {
+      return _rgbToHex(+color[0], +color[1], +color[2]);
+    }
+    if (typeof color === 'object') {
+      if ('r' in color && 'g' in color && 'b' in color) {
+        return _rgbToHex(+color.r, +color.g, +color.b);
+      }
+      // 其它对象：不认识，回退
+      return fallback;
+    }
+
+    // 3) 数字：按 0xRRGGBB 解释
+    if (typeof color === 'number' && Number.isFinite(color)) {
+      const n = Math.max(0, Math.min(0xFFFFFF, color|0));
+      return `#${n.toString(16).padStart(6, '0').toUpperCase()}`;
+    }
+
+    // 4) 字符串：各种 CSS 颜色
+    if (typeof color === 'string') {
+      let s = color.trim();
+      if (!s) return fallback;
+
+      // 4.1 处理 hex
+      const mHex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+      if (mHex) {
+        const h = mHex[1];
+        if (h.length === 3) {
+          // #abc -> #AABBCC
+          const r = h[0], g = h[1], b = h[2];
+          return `#${(r+r+g+g+b+b).toUpperCase()}`;
+        } else {
+          return `#${h.toUpperCase()}`;
+        }
+      }
+
+      // 4.2 处理 rgb/rgba(...)
+      const mRgb = s.match(/^rgba?\s*\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/i);
+      if (mRgb) {
+        return _rgbToHex(+mRgb[1], +mRgb[2], +mRgb[3]);
+      }
+
+      // 4.3 其它命名色/复杂格式：用 Canvas 解析成 rgb(...)
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext && canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#000';          // 先设个默认
+        ctx.fillStyle = s;                // 让浏览器解析
+        const resolved = ctx.fillStyle;   // 通常变成 "rgb(r, g, b)"
+        const m2 = resolved && resolved.match(/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i);
+        if (m2) return _rgbToHex(+m2[1], +m2[2], +m2[3]);
+      }
+    }
+
+    // 都没命中：回退
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+
 // 基于“原始 hexList”构建坐标索引：panelIdx -> Map("q,r" -> [多条记录])
 function ensureCoordIndex(panelIdx) {
   if (!App.coordIndexByPanel) App.coordIndexByPanel = new Map();
@@ -1595,7 +1674,7 @@ function ensureColorMenu() {
     </div>
     <div style="display:flex;justify-content:flex-end;gap:8px">
       <button id="alt-color-cancel" style="height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#fff;cursor:pointer">Cancel</button>
-      <button id="alt-color-confirm" style="height:28px;padding:0 12px;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer">Confirm</button>
+      <button id="alt-color-confirm" style="height:28px;padding:0 12px;border-radius:8px;border:none;background:#e5e7eb;color:#fff;cursor:pointer">Confirm</button>
     </div>
   `;
   document.body.appendChild(menu);
@@ -1691,20 +1770,28 @@ function ensureColorMenu() {
 
 function showColorMenu(x, y, initColor = '#a9d08d') {
   const menu = ensureColorMenu();
-  const { inp, hex } = {
-    inp: /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-input')),
-    hex: /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-hex')),
-  };
-  inp.value = initColor;
-  hex.value = initColor.toUpperCase();
+  if (!menu) return;
+
+  const inp = /** @type {HTMLInputElement|null} */(menu.querySelector('#alt-color-input'));
+  const hex = /** @type {HTMLInputElement|null} */(menu.querySelector('#alt-color-hex'));
+
+  // 统一成 "#RRGGBB"（大写）
+  const hexColor = normalizeColorToHex(initColor, '#A9D08D'); // => "#A9D08D"
+
+  if (inp) inp.value = hexColor;               // <input type="color"> 也能接受大写
+  if (hex) hex.value = hexColor.toUpperCase(); // 文本显示大写
 
   // 避免出屏
   const pad = 8;
   const vw = window.innerWidth, vh = window.innerHeight;
+  // 先显示，再测量 offsetWidth/Height 更准确
   menu.style.display = 'block';
-  menu.style.left = Math.min(x, vw - menu.offsetWidth - pad) + 'px';
-  menu.style.top  = Math.min(y, vh - menu.offsetHeight - pad) + 'px';
+  const w = menu.offsetWidth || 240;
+  const h = menu.offsetHeight || 120;
+  menu.style.left = Math.min(x, vw - w - pad) + 'px';
+  menu.style.top  = Math.min(y, vh - h - pad) + 'px';
 }
+
 function hideColorMenu() {
   const menu = document.getElementById('alt-color-menu');
   if (menu) menu.style.display = 'none';

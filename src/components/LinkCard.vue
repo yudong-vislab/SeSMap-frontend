@@ -20,15 +20,16 @@
          @click="summarizeSelected"
          title="Summarize checked MSUs in this link"
        >
-         Summarize Selected<span v-if="selectedCount"> ({{ selectedCount }})</span>
+         Summarize<span v-if="selectedCount"> ({{ selectedCount }})</span>
        </button>
      </div>
 
 
     <!-- ② 原文句子 - 显示当前link关联的MSU句子（含勾选） -->
     <div class="subcard__source">
-      <div v-if="linkMsuSentences.length > 0" class="msu-sentences">
-        <div v-for="(msu, index) in linkMsuSentences" :key="msu.uid" class="msu-sentence">
+       <div v-if="displayMsuSentences.length > 0" class="msu-sentences">
+         <!-- ★ 使用 displayMsuSentences：点击节点时仅显示该 HSU 的 MSU，点击空白恢复全部 -->
+         <div v-for="(msu, index) in displayMsuSentences" :key="msu.uid" class="msu-sentence">
           <div class="msu-meta">
             <label class="msu-checkwrap">
               <input
@@ -107,6 +108,9 @@ const llmError = ref('')
 
 // 勾选状态：存 uid（= HSU key + '#' + MSU id），确保同一 MSU 出现在不同 HSU 时不混淆
 const selectedMsus = ref(new Set())
+
+// ★ 新增：当前点击选中的 HSU 键（"panelIdx:q,r"），null 表示不筛选
+const pickedNodeKey = ref(null)
 
 // 切换显示/隐藏原文
 const toggleOriginal = () => { showOriginal.value = !showOriginal.value }
@@ -193,6 +197,13 @@ const summarizeSelected = async () => {
   }
 }
 
+// ★ 新增：根据是否点击选中某个 HSU 来决定显示的 MSU 清单
+const displayMsuSentences = computed(() => {
+  const all = linkMsuSentences.value || []
+  if (!pickedNodeKey.value) return all
+  return all.filter(m => m.hsuKey === pickedNodeKey.value)
+})
+
 onMounted(() => {
   mini = mountMiniLink(svgRef.value, {
     link: props.link,
@@ -205,7 +216,12 @@ onMounted(() => {
     defaultAlpha: props.defaultAlpha,
     borderColorByNode: props.borderColorByNode,
     borderWidthByNode: props.borderWidthByNode,
-    fillByNode: props.fillByNode
+    fillByNode: props.fillByNode,
+    pickedId: pickedNodeKey.value,          // ★ 同步当前选中（初始为空）
+    onPick: (key /* "panelIdx:q,r" or null */) => {
+      pickedNodeKey.value = key
+    }
+
   })
 })
 
@@ -236,7 +252,9 @@ watch(
       defaultAlpha: props.defaultAlpha,
       borderColorByNode: props.borderColorByNode,
       borderWidthByNode: props.borderWidthByNode,
-      fillByNode: props.fillByNode
+      fillByNode: props.fillByNode,
+      pickedId: pickedNodeKey.value,        // ★ 每次更新保持选中样式
+      onPick: (key) => { pickedNodeKey.value = key }
     })
   },
   { deep: true }
@@ -272,7 +290,7 @@ onBeforeUnmount(() => mini?.destroy())
   flex: none;
   margin: 0;
   vertical-align: middle;
-  accent-color: #3b82f6;
+  accent-color: #e5e7eb;
 }
 
 /* 原有样式（未改动） */
@@ -318,20 +336,52 @@ onBeforeUnmount(() => mini?.destroy())
 .msu-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .msu-id { font-weight: 600; color: #374151; font-size: 10px; }
 
-.show-original-btn { font-size: 10px; padding: 4px 10px; border-radius: 9999px; background: #3b82f6; color: white; border: none; cursor: pointer; transition: background-color 0.2s; line-height: 1; }
-.show-original-btn:hover { background: #2563eb; }
-.show-original-btn:disabled { opacity: .55; cursor: not-allowed; }
-.summarize-btn { white-space: nowrap; }
+.show-original-btn{
+  font-size: 10px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: #111;      /* 默认可点击：深色 */
+  color: #fff;           /* 白字 */
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  line-height: 1;
+}
+.show-original-btn:hover:not(:disabled){
+  background: #000;      /* hover 更深 */
+}
+.show-original-btn:disabled{
+  background: #e5e7eb;   /* 禁用：变灰 */
+  color: #9ca3af;        /* 文字也变淡 */
+  cursor: not-allowed;
+  opacity: 1;            /* 避免额外变淡 */
+}
+
+/* —— Summarize 专属覆盖（只需定义禁用态，启用时用通用黑底白字） —— */
+.summarize-btn:disabled{
+  background: #e5e7eb;
+  color: #9ca3af;
+}
 
 .msu-text { color: #374151; font-size: 11px; line-height: 1.5; }
 .para-info { margin-top: 8px; padding: 8px; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 4px; }
 .para-info-content { color: #4b5563; font-size: 10px; line-height: 1.5; white-space: pre-wrap; }
 
 .subcard__llm { max-height: 100px; overflow-y: auto; }
-.llm-content { font-size: 11px; line-height: 1.4; color: #374151; padding: 6px; background: #f0f9ff; border-radius: 4px; border-left: 3px solid #0ea5e9; }
+.llm-content { font-size: 11px; line-height: 1.4; color: #374151; padding: 6px; background: #ffffff; border-radius: 4px; border-left: 3px solid #e5e7eb; }
 .llm-loading { font-size: 11px; color: #6b7280; font-style: italic; padding: 6px; }
 .llm-error { font-size: 11px; color: #ef4444; padding: 6px; }
 
 .placeholder{ color:#9ca3af; font-size:12px; }
 .mini{ height:100%; display:block; }
+
+/* 选中节点更醒目（可按需调整颜色/粗细） */
+.mini :deep(.nodes-layer .node.hovered .hex) {
+  stroke: #111;
+  stroke-width: 1;
+}
+.mini :deep(.nodes-layer .node.picked .hex) {
+  stroke: #111;
+  stroke-width: 1;
+}
 </style>

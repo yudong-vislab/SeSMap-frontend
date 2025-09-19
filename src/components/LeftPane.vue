@@ -614,3 +614,16 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
   background:#f5f5f5;
 }
 </style>
+
+<style>
+/* 全局主题色（深灰） */
+:root{
+  --brand: #111;   /* slate-600 */
+  --track: #B0B0B0;   /* gray-200 */
+}
+
+/* 滑动条使用主题色 */
+.cp-slider input[type="range"]{
+  accent-color: var(--brand);
+}
+</style>
