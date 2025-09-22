@@ -334,7 +334,7 @@ function onDragEnd() { dragging.from = dragging.to = null; }
   background:#fff;
 }
 .step__title{
-  font-weight:600; font-size:14px; line-height:1; padding:6px 6px; border-radius:8px;
+  font-weight:600; font-size:12px; line-height:1; padding:6px 6px; border-radius:8px;
   background:#f9fafb; user-select:text; cursor:text;
   outline:none; border:1px dashed transparent;
 }
