@@ -1660,24 +1660,45 @@ function ensureColorMenu() {
     minWidth: '220px',
     padding: '10px 12px',
     borderRadius: '12px',
-    background: 'rgba(30,30,32,0.98)',
-    color: '#fff',
+    background: '#ffffff',                // 白色背景
+    color: '#111',                        // 深色文字
     boxShadow: '0 8px 18px rgba(0,0,0,0.25)',
-    border: '1px solid rgba(255,255,255,0.08)',
+    border: '1px solid rgba(0,0,0,0.1)',  // 边框浅灰
     backdropFilter: 'blur(6px)',
   });
+
   menu.innerHTML = `
-    <div style="font-size:13px;opacity:.85;margin-bottom:8px">Adjust country color</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-      <input id="alt-color-input" type="color" style="width:36px;height:28px;border:none;background:transparent;cursor:pointer" />
-      <input id="alt-color-hex" type="text" placeholder="#AABBCC" style="flex:1;height:28px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#fff;padding:0 8px;font-size:12px;outline:none" />
+    <div style="font-size:13px;opacity:.85;margin-bottom:8px;color:#111">
+      Adjust country color
     </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <input id="alt-color-input" type="color" 
+            style="width:36px;height:28px;border:none;background:transparent;cursor:pointer" />
+      <input id="alt-color-hex" type="text" placeholder="#AABBCC"
+            style="flex:1;height:28px;border-radius:8px;
+                    border:1px solid rgba(0,0,0,.2);
+                    background:#f9f9f9;color:#111;
+                    padding:0 8px;font-size:12px;outline:none" />
+    </div>
+
     <div style="display:flex;justify-content:flex-end;gap:8px">
-      <button id="alt-color-cancel" style="height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#fff;cursor:pointer">Cancel</button>
-      <button id="alt-color-confirm" style="height:28px;padding:0 12px;border-radius:8px;border:none;background:#e5e7eb;color:#fff;cursor:pointer">Confirm</button>
+      <button id="alt-color-cancel"
+              style="height:28px;padding:0 10px;border-radius:8px;
+                    border:1px solid rgba(0,0,0,.2);
+                    background:#fff;color:#111;cursor:pointer">
+        Cancel
+      </button>
+      <button id="alt-color-confirm"
+              style="height:28px;padding:0 12px;border-radius:8px;
+                    border:none;background:#111;color:#fff;cursor:pointer">
+        Confirm
+      </button>
     </div>
   `;
+
   document.body.appendChild(menu);
+
 
   const pick = () => {
     const inp = /** @type {HTMLInputElement} */(menu.querySelector('#alt-color-input'));
@@ -1811,14 +1832,14 @@ function ensureHexTooltip() {
     maxWidth: '420px',
     padding: '10px 12px',
     borderRadius: '12px',
-    background: 'rgba(30,30,32,0.98)',
-    color: '#fff',
-    boxShadow: '0 8px 18px rgba(0,0,0,0.25)',
-    border: '1px solid rgba(255,255,255,0.08)',
+    background: '#ffffff',         // 白底
+    color: '#111',                 // 黑字
+    boxShadow: '0 8px 18px rgba(0,0,0,0.15)', // 阴影也可以调浅一点
+    border: '1px solid rgba(0,0,0,0.1)',      // 边框浅灰
     backdropFilter: 'blur(6px)',
     fontSize: '12.5px',
     lineHeight: '1.45',
-    pointerEvents: 'none' // 绝不截获事件
+    pointerEvents: 'none'
   });
   tip.innerHTML = ''; // 动态填充
   document.body.appendChild(tip);
