@@ -137,7 +137,7 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
     <!-- 2) Paper List（改为新组件） -->
     <section class="lp-card">
       <header class="card__title">
-        Paper List
+        Paper Gallery
         <div class="mv-actions">
           <button class="select-btn" id="SelectBtn" @click="onSelectPaper">Select</button>
           <button class="clear-btn" id="ClearBtn" @click="onClearPaper">Clear</button>
@@ -214,9 +214,12 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
 /* —— Chat —— */
 .lp-chat { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
 .lp-msgs {
-  padding: 10px 2px; overflow: auto; min-height: 0;
-  display: flex; flex-direction: column; gap: 8px;
+  gap: 8px;  
+  padding: 5px 0px;
+  overflow: auto; min-height: 0;
+  display: flex; flex-direction: column; 
   scrollbar-gutter: stable both-edges; scrollbar-width: thin; scrollbar-color: transparent transparent;
+
 }
 .lp-msgs::-webkit-scrollbar { width: 8px; height: 8px; }
 .lp-msgs::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
@@ -225,12 +228,17 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
 .lp-msgs:hover::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, .25); }
 
 /* 气泡 */
-.msg { display: flex; }
+.msg { display: flex; min-width: 0; }
 .msg.user { justify-content: flex-end; }
 .msg .msg-bubble {
   max-width: 90%; padding: 8px 10px; border-radius: 10px; font-size: 11px; background: #f3f4f6;
 }
-.msg.user .msg-bubble { background: #111; color: #fff; }
+
+ .msg.user .msg-bubble {
+   background: #111; color: #fff;
+   margin-right: 11px;             /* ✅ 再和右边拉开一点，圆角稳定 */
+ }
+
 
 /* Paper List 右上操作按钮 */
 .mv-actions { display: flex; align-items: center; gap: 8px; float: right; }

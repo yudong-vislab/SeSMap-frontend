@@ -82,7 +82,7 @@ onMounted(() => nextTick(autoResize))
 <style scoped>
 .chat-dock{
   position: sticky; bottom: 0;
-  display: grid; grid-template-rows: auto auto;
+  display: grid; grid-template-rows: auto;
   padding: 10px 12px;
   background: #fff;
   border-top: 1px solid #eee;
@@ -103,9 +103,10 @@ onMounted(() => nextTick(autoResize))
 /* 编辑区 */
 .dock-editor{
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 6px;
   align-items: end;
+  min-width: 0;
 }
 
 /* 关键：textarea 初始不出现滚条；到上限时可滚动，但滚动条符合“自动隐藏”风格 */
@@ -113,6 +114,7 @@ onMounted(() => nextTick(autoResize))
 .dock-textarea{
   /* 布局与尺寸 */
   width: 100%;
+  min-width: 0; 
   box-sizing: border-box;      /* 让高度计算包含 padding 与 border */
   resize: none;
   border: 1px solid #e5e7eb;
@@ -125,6 +127,7 @@ onMounted(() => nextTick(autoResize))
 
   /* 内边距尽量小，确保一行不触发滚动 */
   padding: 2px 2px;
+
 
   /* 初始不滚动，避免出现滚动条 */
   overflow-y: hidden;
@@ -157,4 +160,28 @@ onMounted(() => nextTick(autoResize))
 .dock-textarea::-webkit-scrollbar-track{ background: transparent; }
 .dock-textarea:hover{ scrollbar-color: rgba(0,0,0,.25) transparent; }
 .dock-textarea:hover::-webkit-scrollbar-thumb{ background: rgba(0,0,0,.25); }
+
+/* 固定大小的发送按钮（与首行同高） */
+ .send-btn{
+   align-self: end;             /* 在 grid 中不被拉伸 */
+   /*width: 20px;*/                 /*固定宽 */
+   height: 20px;                /*固定高（和初始一样的小圆） */
+   border-radius: 50%;
+   border: 1px solid #111;
+   background: #111;
+   color: #fff;
+   padding: 0;                  /* 避免内边距把按钮撑大 */
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+   cursor: pointer;
+   align-self: end;
+ }
+ .send-btn:disabled{ opacity:.45; cursor:not-allowed; }
+ .send-btn .icon{
+   width: 12px;                 /* ✅ 图标固定尺寸，不随按钮或字体放大 */
+   height: 12px;
+   display: block;
+ }
+
 </style>

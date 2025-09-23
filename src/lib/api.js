@@ -51,8 +51,8 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
  Each HSU has multiple MSU sentences. Please summarize across all selected MSUs.
  
  Requirements:
- 1. Provide a concise summary in English (≤50 words).
- 2. Highlight the main research contributions and conclusions.
+ 1. Provide a concise summary in English (≤20 words).
+ 2. Highlight the main points into summary.
  3. Respect grouping: ensure summary reflects differences between HSUs if necessary.
  4. Output format strictly in JSON:
  {"Summary": "Your summary here"}
