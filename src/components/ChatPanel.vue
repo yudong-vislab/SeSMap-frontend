@@ -1,128 +1,133 @@
 <script setup>
 import { ref } from 'vue'
-import ChatDock from './chatdock.vue'
-import { chatOnce } from '@/api/chat'
+import ChatDock from './ChatDock.vue'                 // 你的输入组件（含 doSend）
+import MarkdownView from './MarkdownView.vue'         // 你新增的渲染组件
+import { sendQueryToLLM, interpretLLMResponse } from '@/api' // 你的 api.js
 
+// 会话消息
+// role: 'user' | 'assistant'
+// type: 'markdown' | 'text' | 'error' | 'system'
 const messages = ref([
-  { role: 'system', content: '你是科研助手。' }
+  { role: 'assistant', type: 'text', text: 'Hi! Ask about case1, e.g. "In case1, summarize contributions of each paper."' }
 ])
 
-const loading = ref(false)
-const errorMsg = ref('')
+const isLoading = ref(false)
 
+function push(msg){ messages.value.push(msg) }
+function showAssistant(text){ push({ role:'assistant', type:'text', text }) }
+function showAssistantMD(text){ push({ role:'assistant', type:'markdown', text }) }
+function showError(text){ push({ role:'assistant', type:'error', text }) }
+
+// 处理 ChatDock 的 send 事件
 async function onSend(userText){
-  errorMsg.value = ''
-  loading.value = true
-  messages.value.push({ role: 'user', content: userText })
-
+  push({ role:'user', type:'text', text: userText })
+  isLoading.value = true
   try {
-    // 你可以把 full history 传给后端，也可以只传最后几条
-    const { answer } = await chatOnce({ messages: messages.value })
-    messages.value.push({ role: 'assistant', content: answer })
+    // 后端：回答场景返回 text/plain（Markdown）；其它场景可能是 JSON（列项目/建索引）
+    const res = await sendQueryToLLM(userText, 'ChatGPT', 'markdown')
+    console.log('typeof res =', typeof res, res.slice?.(0, 80));
+    if (typeof res === 'string') {
+      // ✅ 直接作为 Markdown 消息
+      messages.value.push({ role:'assistant', type:'markdown', text: res })
+    } else {
+      // JSON：可能是 rag/projects 或 rag/index 等
+      const view = interpretLLMResponse(res)
+      if (view.type === 'rag-projects') {
+        showAssistant(`Available projects: ${view.projects.join(', ')}`)
+      } else if (view.type === 'rag-index') {
+        const reused = view.stats?.reused ? ' (reused)' : ''
+        const chunks = view.stats?.total_chunks ?? view.stats?.built ?? '—'
+        showAssistant(`Index for ${view.projectId} is ready. Chunks/Built: ${chunks}${reused}`)
+      } else if (view.type === 'rag-answer') {
+        // 如果你还保留了旧协议（极少情况），也能兜底
+        const md = view.text || 'Done.'
+        showAssistantMD(md)
+      } else if (view.type === 'error') {
+        showError(view.text || 'Unknown error')
+      } else {
+        // 兜底显示
+        showAssistant('Done.')
+        console.log('RAW JSON:', res)
+      }
+      
+    }
   } catch (e) {
-    errorMsg.value = e.message || '对话失败'
+    showError(e.message || String(e))
   } finally {
-    loading.value = false
+    isLoading.value = false
   }
-}
-function hardWrap(str) {
-  // 思路：按空白分词；对长度>24的无空格长串，每8字符插入零宽空格\u200b
-  //（对URL/连续数字/长英文都有效，视觉无痕）
-  return String(str)
-    .split(/(\s+)/)
-    .map(tok => (tok.length > 24 ? tok.replace(/(.{8})/g, '$1\u200b') : tok))
-    .join('');
 }
 </script>
 
 <template>
   <div class="chat-panel">
     <div class="msg-list">
-      <div class="msg-scroll">
-        <div class="msgs">
-          <div v-for="(m, idx) in messages" :key="idx" class="msg" :class="m.role">
-            <div class="bubble">{{ m.content }}</div>
-          </div>
-          <div v-if="loading" class="msg assistant">
-            <div class="bubble">Thinking...</div>
-          </div>
-          <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
-        </div>
-        <!-- 右侧“空轨道列”（永远留白给滚动条/安全距离） -->
-        <div class="rail" aria-hidden="true"></div>
+      <div v-for="(m,i) in messages" :key="i" class="msg" :class="m.role">
+        <!-- 强制所有助手机器人消息用 MarkdownView 渲染 -->
+        <template v-if="m.role === 'assistant'">
+          <MarkdownView :source="m.text" />
+        </template>
+        <template v-else-if="m.type === 'error'">
+          <div class="bubble error">{{ m.text }}</div>
+        </template>
+        <template v-else>
+          <div class="bubble">{{ m.text }}</div>
+        </template>
+      </div>
+
+
+      <div v-if="isLoading" class="msg assistant">
+        <div class="bubble typing">Thinking…</div>
       </div>
     </div>
 
-    <ChatDock @send="onSend" />
+    <ChatDock
+      :busy="isLoading"
+      placeholder="Ask in English, e.g. “In case1, summarize methods and contributions per paper.”"
+      :autofocus="true"
+      :maxLength="4000"
+      @send="onSend"
+    />
   </div>
 </template>
 
 <style scoped>
-/* 一处定义“右侧安全边距”变量，统一管控 */
-.chat-panel{ 
-  --rg: 20px;
+.chat-panel{
   display:flex; flex-direction:column; height:100%;
 }
-
-
-/* 外层容器不滚动，避免滚动条贴边覆盖气泡 */
 .msg-list{
-  flex:1;
-  overflow:hidden;
-  background:#fff;
+  flex:1; overflow:auto; padding:12px 12px 4px;
+  display:flex; flex-direction:column; gap:10px;
 }
-
-/* 里层才滚动，并负责 padding 与滚动条占位 */
-.msg-list{ flex:1; overflow:hidden; }
-.msg-scroll{
-  height:100%;
-  overflow:auto;
-  box-sizing:border-box;
-  padding:12px 20px 12px 12px;  /* 右侧多留点安全边距 */
-  scrollbar-gutter: stable both-edges;
-  overscroll-behavior: contain;
-}
-
-/* 所有气泡（含用户/助手） */
-.bubble{
-  display:block;                 /* WebKit 上更稳 */
-  width:fit-content;
-  max-width: min(70%, 720px);    /* 或改成 60ch 也可以 */
-  padding:8px 10px;
-  border-radius:12px;
-  background:#f5f5f5;
-  background-clip: padding-box;
-
-  /* ✅ 禁用内部滚动条（即使有人误设了高度也不滚） */
-  overflow: visible !important;
-  max-height: none !important;
-  overscroll-behavior: contain;
-
-  /* ✅ 强制换行（新→旧→兜底） */
-  white-space: pre-wrap;         /* 保留 \n */
-  overflow-wrap: anywhere;       /* 现代浏览器：无空格也断 */
-  line-break: anywhere;          /* WebKit/Safari 补丁 */
-  word-break: break-word;        /* 旧版回退 */
-  word-break: break-all;         /* 兜底：纯数字/URL 必断 */
-
-  line-height:1.5;
-  min-width:0;
-  contain: paint;
-}
-
-/* 用户/助手配色及右侧安全距（防止圆角被滚动条“擦掉”） */
-.msg.user .bubble{ background:#111; color:#fff; margin-right:20px; }
-.msg.assistant .bubble{ background:#f5f5f5; }
-
-/* 用户/助手气泡配色 */
-.msg{
-  display:flex;
-  margin-bottom:8px;
-  min-width:0;              
-}
+.msg{ display:flex; }
 .msg.user{ justify-content:flex-end; }
 .msg.assistant{ justify-content:flex-start; }
 
+.bubble{
+  max-width: 70%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  line-height: 1.5;
+  background: #f6f7f9;
+  color: #111;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.user .bubble{ background:#dbeafe; }
+.bubble.error{ background:#fee2e2; color:#b91c1c; }
+.bubble.typing{ opacity:.7; font-style: italic; }
 
-.error{ color:#c00; padding:8px; }
+/* 让 MarkdownView 的内容看起来像泡泡 */
+.msg.assistant :deep(.markdown-body){
+  max-width: 70%;
+  background: #f6f7f9;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+.msg.user :deep(.markdown-body){
+  max-width: 70%;
+  background:#dbeafe;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
 </style>

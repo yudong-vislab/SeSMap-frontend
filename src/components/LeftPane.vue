@@ -215,7 +215,7 @@ watch(markdownModel, v => emit('updateMarkdownModel', v))
 .lp-chat { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
 .lp-msgs {
   gap: 8px;  
-  padding: 5px 0px;
+  padding: 12px 0px;
   overflow: auto; min-height: 0;
   display: flex; flex-direction: column; 
   scrollbar-gutter: stable both-edges; scrollbar-width: thin; scrollbar-color: transparent transparent;
