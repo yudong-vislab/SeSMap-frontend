@@ -90,24 +90,36 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
     const data = await res.json();
     console.log('API response:', data);
     
-    // 处理JSON字符串格式的响应
-    let responseText = data.answer || '';
-    if (typeof responseText === 'string') {
-      try {
-        // 尝试解析JSON字符串
-        const parsed = JSON.parse(responseText);
-        return parsed.Summary || parsed.summary || responseText;
-      } catch (e) {
-        // 如果不是JSON格式，直接返回文本
-        return responseText;
+    // 1) 先尝试对象直接键位（你现在后端常返回 { Summary: "..." }）
+    if (data && typeof data === 'object') {
+      const direct =
+        data.Summary ?? data.summary ?? data.text ??
+        data?.data?.Summary ?? data?.data?.summary ?? data?.data?.text ??
+        data?.payload?.Summary ?? data?.payload?.summary ?? data?.payload?.text;
+      if (typeof direct === 'string' && direct.trim()) {
+        return direct.trim();
       }
     }
-    
-    // 如果是对象格式
-    return data.Summary || data.summary || responseText;
+    // 2) 再处理 data.answer 为“非空字符串”的情况
+    const responseText = (typeof data?.answer === 'string') ? data.answer : '';
+    if (responseText && responseText.trim()) {
+      try {
+        const parsed = JSON.parse(responseText);
+        const fromParsed = parsed?.Summary ?? parsed?.summary ?? parsed?.text;
+        if (typeof fromParsed === 'string' && fromParsed.trim()) return fromParsed.trim();
+        return responseText.trim(); // 非 JSON 或没有目标键，就用原文本
+      } catch {
+        return responseText.trim(); // 不是 JSON，直接返回文本
+      }
+    }
+
+    // 3) 最后兜底（避免返回 undefined 导致前端看到空）
+    return '';
+
+
   } catch (error) {
     console.error('Summary generation error:', error);
-    return 'Generating summary...';
+    return '';
   }
 }
 

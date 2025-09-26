@@ -61,7 +61,7 @@
     <!-- ③ 大模型总结（展示点击按钮后的结果） -->
     <div class="subcard__llm">
       <div v-if="llmSummary" class="llm-content">
-        {{ llmSummary }}
+       Summary:  {{ llmSummary }}
       </div>
       <div v-else-if="llmLoading" class="llm-loading">
         LLM is summarizing...
@@ -188,7 +188,12 @@ const summarizeSelected = async () => {
   try {
     llmLoading.value = true
     const answer = await summarizeMsuSentences(groups) // 使用你提供的 API（已支持分组）
-    llmSummary.value = answer
+    console.log(answer)
+    llmSummary.value =
+     typeof answer === 'string' ? answer :
+     answer?.text ?? answer?.summary ?? answer?.payload?.text ?? answer?.payload?.summary ??
+     JSON.stringify(answer)
+
   } catch (err) {
     console.error(err)
     llmError.value = 'Failed to generate summary.'

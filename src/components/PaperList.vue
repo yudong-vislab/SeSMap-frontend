@@ -119,7 +119,7 @@ const gridVars = computed(() => {
       >
         {{ titleLocal }}
       </div>
-      <button class="subspace-close" @click="$emit('close')" aria-label="Close">×</button>
+      <!-- <button class="subspace-close" @click="$emit('close')" aria-label="Close">×</button> -->
     </div>
 
     <!-- 子卡列表（仅一个 paperlist 子卡） -->
