@@ -57,71 +57,141 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
 }
 
 // 新增：总结MSU句子的函数
- export async function summarizeMsuSentences(msuGroups) {
-   // msuGroups: [ { hsu: "113,-11", sentences: [ "MSU 214: ...", "MSU 540: ..." ] }, ... ]
-   const prompt = `You are given multiple scientific fragments grouped by HSU (Hierarchical Semantic Units).
- Each HSU has multiple MSU sentences. Please summarize across all selected MSUs.
- 
- Requirements:
- 1. Provide a concise summary in English (≤20 words).
- 2. Highlight the main points into summary.
- 3. Respect grouping: ensure summary reflects differences between HSUs if necessary.
- 4. Output format strictly in JSON:
- {"Summary": "Your summary here"}
- 
- HSU Groups and Sentences:
- ${msuGroups.map(g => `HSU ${g.hsu}:\n${g.sentences.join('\n')}`).join('\n\n')}`;
+export async function summarizeMsuSentences(hopsOrGroups) {
+  // ---------- 规范化 hops ----------
+  const normalize = (arr) => {
+    const hasHopShape = arr?.some(x => 'step' in x || 'panelIdx' in x || 'subspace' in x);
+    if (hasHopShape) {
+      return [...arr]
+        .filter(x => Array.isArray(x.sentences) && x.sentences.length > 0)
+        .sort((a, b) => (a.step || 1) - (b.step || 1))
+        .map(x => ({
+          step: x.step ?? 0,
+          hsu: x.hsu,
+          panelIdx: x.panelIdx,
+          subspace: x.subspace || `Subspace ${x.panelIdx}`,
+          sentences: x.sentences
+        }));
+    }
+    return (arr || []).map((g, i) => ({
+      step: i + 1,
+      hsu: g.hsu,
+      panelIdx: Number(String(g.hsu).split(':')[0] || 0),
+      subspace: `Subspace ${Number(String(g.hsu).split(':')[0] || 0)}`,
+      sentences: g.sentences || []
+    }));
+  };
+  const hops = normalize(hopsOrGroups);
 
+  // ---------- Legend & Ordered Hops ----------
+  const legendMap = new Map();
+  hops.forEach(h => {
+    const name = h.subspace || `Subspace ${h.panelIdx}`;
+    if (!legendMap.has(h.panelIdx)) legendMap.set(h.panelIdx, name);
+  });
+  const legendLines = Array.from(legendMap.entries())
+    .sort((a,b) => a[0]-b[0])
+    .map(([idx, name]) => `- panelIdx ${idx} → "${name}"`)
+    .join('\n');
+
+  const hopsBlock = hops
+    .sort((a,b) => (a.step||0) - (b.step||0))
+    .map(h => [
+      `Step ${h.step} | HSU ${h.hsu} | Subspace "${h.subspace}" (panelIdx ${h.panelIdx}):`,
+      ...(h.sentences || [])
+    ].join('\n'))
+    .join('\n\n');
+
+  // ---------- 提示词：只返回 RouteSummary + 禁止代码块 ----------
+  const prompt = `
+You are given an ordered flight across a semantic map. Each hop is an HSU node belonging to a subspace.
+Each hop includes one or more MSU sentences selected by the user.
+
+GOALS:
+- Produce a faithful, concise-but-informative overview that RESPECTS the original hop order.
+- Emphasize major shifts when crossing subspaces (panelIdx changes), but never invent facts.
+- Summarize the substance across hops; do NOT list hops one by one.
+
+CONSTRAINTS (Very Important):
+1) Preserve the logic implied by hop order (temporal/causal/argument flow).
+2) Base ONLY on the provided MSU sentences (no hallucination).
+3) Output MUST be a SINGLE JSON object with EXACTLY ONE key: RouteSummary.
+4) Do NOT include any markdown, code fences, labels, or extra text before/after the JSON.
+5) Length target: 80–140 words (informative yet concise).
+
+LEGEND (panel index → subspace name):
+${legendLines || '(none)'}
+
+ORDERED HOPS (do not reorder; for your reference only):
+${hopsBlock || '(none)'}
+
+REQUIRED OUTPUT (single JSON object only):
+{"RouteSummary": "<80–140 words overview that integrates key points and notes any important cross-subspace transitions>"}
+`.trim();
+
+  // ---------- 请求 ----------
+  let text = '';
   try {
     const res = await fetch('/api/query', {
       method: 'POST',
       headers: { 'Content-Type':'application/json' },
-      body: JSON.stringify({ 
-        query: prompt, 
-        model: 'gpt-3.5-turbo',
-        max_tokens: 100
+      body: JSON.stringify({
+        query: prompt,
+        task: 'subspace',
+        model: 'gpt-3.5-turbo'
       })
     });
-    
-    if (!res.ok) {
-      throw new Error('API request failed');
-    }
-    
-    const data = await res.json();
-    console.log('API response:', data);
-    
-    // 1) 先尝试对象直接键位（你现在后端常返回 { Summary: "..." }）
-    if (data && typeof data === 'object') {
-      const direct =
-        data.Summary ?? data.summary ?? data.text ??
-        data?.data?.Summary ?? data?.data?.summary ?? data?.data?.text ??
-        data?.payload?.Summary ?? data?.payload?.summary ?? data?.payload?.text;
-      if (typeof direct === 'string' && direct.trim()) {
-        return direct.trim();
-      }
-    }
-    // 2) 再处理 data.answer 为“非空字符串”的情况
-    const responseText = (typeof data?.answer === 'string') ? data.answer : '';
-    if (responseText && responseText.trim()) {
-      try {
-        const parsed = JSON.parse(responseText);
-        const fromParsed = parsed?.Summary ?? parsed?.summary ?? parsed?.text;
-        if (typeof fromParsed === 'string' && fromParsed.trim()) return fromParsed.trim();
-        return responseText.trim(); // 非 JSON 或没有目标键，就用原文本
-      } catch {
-        return responseText.trim(); // 不是 JSON，直接返回文本
-      }
-    }
-
-    // 3) 最后兜底（避免返回 undefined 导致前端看到空）
-    return '';
-
-
-  } catch (error) {
-    console.error('Summary generation error:', error);
+    if (!res.ok) throw new Error('API request failed');
+    text = (await res.text()).trim();
+  } catch (e) {
+    console.error('Summary generation error:', e);
     return '';
   }
+
+  // ---------- 解析：剥掉代码块/多余前后缀，只取 RouteSummary ----------
+  const stripCodeFences = (s) =>
+    s.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+
+  const tryParseRouteSummary = (raw) => {
+    // 1) 先去掉三引号代码块
+    let s = stripCodeFences(raw);
+
+    // 2) 有时模型会在 JSON 前加 "Summary:" 之类，清掉常见前缀
+    s = s.replace(/^\s*summary\s*:\s*/i, '').trim();
+
+    // 3) 直接尝试 JSON.parse
+    try {
+      const obj = JSON.parse(s);
+
+      // 3a) 标准：{ RouteSummary: "..." }
+      if (obj && typeof obj.RouteSummary === 'string' && obj.RouteSummary.trim()) {
+        return obj.RouteSummary.trim();
+      }
+
+      // 3b) 退路1：返回成数组 [{unit, type}...] → 把 unit 串起来
+      if (Array.isArray(obj) && obj.length) {
+        const units = obj
+          .map(x => (typeof x?.unit === 'string' ? x.unit.trim() : ''))
+          .filter(Boolean);
+        if (units.length) return units.join('; ');
+      }
+
+      // 3c) 退路2：对象其他键里找最像摘要的字段
+      const candidate =
+        obj.summary || obj.Summary || obj.routeSummary || obj.abstract || obj.text;
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+
+      // 3d) 退路3：任意把对象压成一行文本
+      return JSON.stringify(obj);
+    } catch {
+      // 4) 不是 JSON：直接返回纯文本
+      return s;
+    }
+  };
+
+  return tryParseRouteSummary(text);
 }
+
 
 // === RAG：列项目 ===
 export async function listRagProjects() {

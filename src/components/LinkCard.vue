@@ -166,41 +166,74 @@ const linkMsuSentences = computed(() => {
 })
 
 /** 点击按钮：仅对已勾选的 MSU 做总结，并按 HSU 分组发给后端 */
+/** 点击按钮：仅对已勾选的 MSU 做总结，并按“路径顺序”组织为 hops */
 const summarizeSelected = async () => {
-  llmError.value = ''
-  llmSummary.value = ''
+  llmError.value = '';
+  llmSummary.value = '';
 
-  // 组装 groups: [{ hsu: 'panelIdx:q,r', sentences: ['MSU 123: text', ...] }, ...]
-  const byHSU = new Map()
-  const sel = selectedMsus.value
-  linkMsuSentences.value.forEach(m => {
-    if (!sel.has(m.uid)) return
-    if (!byHSU.has(m.hsuKey)) byHSU.set(m.hsuKey, [])
-    byHSU.get(m.hsuKey).push(`MSU ${m.id}: ${m.sentence}`)
-  })
-  const groups = Array.from(byHSU.entries()).map(([hsu, sentences]) => ({ hsu, sentences }))
+  // 1) 建 index： "panelIdx:q,r" -> node
+  const nodeMap = new Map();
+  (props.nodes || []).forEach(node => {
+    const key = `${node.panelIdx}:${node.q},${node.r}`;
+    nodeMap.set(key, node);
+  });
 
-  if (groups.length === 0) {
-    llmError.value = 'Please select at least one MSU.'
-    return
+  // 2) panelIdx → 子空间名（尽力获取；不存在就回退）
+  //   - 如果后端/数据层有 link.panelNamesByIndex 之类映射，可优先使用
+  const panelNameByIdx = (props.link && props.link.panelNamesByIndex) || {};
+  const fallbackName = idx => panelNameByIdx[idx] || `Subspace ${idx}`;
+
+  // 3) 沿 path 顺序生成 hops（保序，不合并）
+  const hops = [];
+  const sel = selectedMsus.value; // Set(uid)
+  const path = Array.isArray(props.link?.path) ? props.link.path : [];
+  path.forEach((pt, i) => {
+    const hsuKey = `${pt.panelIdx}:${pt.q},${pt.r}`;
+    const node = nodeMap.get(hsuKey);
+    if (!node?.msu || !Array.isArray(node.msu)) return;
+
+    // 只收集“被勾选”的 MSU
+    const sentences = [];
+    node.msu.forEach(msu => {
+      const id = msu?.MSU_id ?? msu?.id;
+      if (id == null) return;
+      const uid = `${hsuKey}#${id}`;
+      if (!sel.has(uid)) return;
+      const sent = msu.sentence || msu.text || 'No sentence available';
+      sentences.push(`MSU ${id}: ${sent}`);
+    });
+
+    if (sentences.length > 0) {
+      hops.push({
+        step: i + 1,
+        hsu: hsuKey,                // "panelIdx:q,r"
+        panelIdx: pt.panelIdx,
+        subspace: fallbackName(pt.panelIdx), // 子空间名（尽力）
+        sentences                  // 保持原始顺序
+      });
+    }
+  });
+
+  if (hops.length === 0) {
+    llmError.value = 'Please select at least one MSU.';
+    return;
   }
 
   try {
-    llmLoading.value = true
-    const answer = await summarizeMsuSentences(groups) // 使用你提供的 API（已支持分组）
-    console.log(answer)
+    llmLoading.value = true;
+    // ✅ 把“有序 hops”传给 API
+    const answer = await summarizeMsuSentences(hops);
     llmSummary.value =
-     typeof answer === 'string' ? answer :
-     answer?.text ?? answer?.summary ?? answer?.payload?.text ?? answer?.payload?.summary ??
-     JSON.stringify(answer)
-
+      typeof answer === 'string' ? answer :
+      answer?.text ?? answer?.summary ?? answer?.payload?.text ?? answer?.payload?.summary ??
+      JSON.stringify(answer);
   } catch (err) {
-    console.error(err)
-    llmError.value = 'Failed to generate summary.'
+    console.error(err);
+    llmError.value = 'Failed to generate summary.';
   } finally {
-    llmLoading.value = false
+    llmLoading.value = false;
   }
-}
+};
 
 // ★ 新增：根据是否点击选中某个 HSU 来决定显示的 MSU 清单
 const displayMsuSentences = computed(() => {

@@ -725,8 +725,15 @@ function publishToStepAnalysis() {
     }
 
     if (typeof window !== 'undefined' && window.dispatchEvent) {
-      const ev = new CustomEvent('semantic-map-export', { detail: { nodes: nodesAll, links } });
+      // ★ 给导出的 links 也盖上名字，保证外部拿到的 link 已包含 panelNames / panelNamesByIndex
+      stampSubspaceNamesOnAllLinks(links);
+      const panelNamesByIndex = getSubspaceNameMap();
+
+      const ev = new CustomEvent('semantic-map-export', {
+        detail: { nodes: nodesAll, links, panelNamesByIndex }
+      });
       window.dispatchEvent(ev);
+
     }
     App._exportSplit = { nodes: nodesAll, links };
   } catch (e) {
@@ -1922,6 +1929,37 @@ function hideHexTooltip() {
     return 0;
   }
 
+  // —— Subspace 名称工具 ——
+  // 生成 panelIdx -> subspaceName 的映射
+  function getSubspaceNameMap() {
+    const m = {};
+    const arr = App?.currentData?.subspaces || [];
+    arr.forEach((s, i) => { m[i] = (s && s.subspaceName) ? s.subspaceName : `Subspace ${i}`; });
+    return m;
+  }
+
+  // 给单条 link 写入 panelNames / panelNamesByIndex
+  function stampSubspaceNamesOnLink(link) {
+    if (!link) return link;
+    const nameByIdx = getSubspaceNameMap();
+    const path = Array.isArray(link.path) ? link.path : [];
+    const names = [];
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      const pIdx = resolvePanelIdxForPathPoint(p, link, i); // 你已有的工具，能处理 flight 跨子空间
+      names.push(nameByIdx[pIdx] ?? `Subspace ${pIdx}`);
+    }
+    link.panelNames = names;            // 如 ["background","method","background", ...]（保序、不合并）
+    link.panelNamesByIndex = nameByIdx; // 如 {0:"background",1:"method",...}
+    return link;
+  }
+
+  // 批量写入当前画面里所有 links
+  function stampSubspaceNamesOnAllLinks(links) {
+    (links || []).forEach(stampSubspaceNamesOnLink);
+  }
+
+
   function findLinkById(routeId){
     return (App._lastLinks || []).find(l => linkKey(l) === routeId) || null;
   }
@@ -2141,6 +2179,8 @@ function hideHexTooltip() {
       }
       // 可选：若 Alt 会影响即时上色（如“灰化非选中”），这里顺手刷新
       updateHexStyles?.();
+      
+      stampSubspaceNamesOnAllLinks(App._lastLinks);
       publishToStepAnalysis?.();
 
       // 更新按钮视觉
@@ -4210,7 +4250,9 @@ function updateHexStyles() {
       path
     };
 
+    stampSubspaceNamesOnLink(link);  
     App._lastLinks.push(link);
+    
     // 清理草稿 & 临时线
     App.routeDraft = null;
     App.flightStart = null;
@@ -4464,6 +4506,7 @@ function observePanelResize() {
   function renderSemanticMapFromData(data) {
     App.currentData = data;
     App._lastLinks = data.links || [];
+    stampSubspaceNamesOnAllLinks(App._lastLinks);   // ★ 写入子空间名字
     App.countryKeysGlobal = new Map();   // ★ 新增：全量重建前清空
 
     // ★ 给每条 link 分配稳定 id（若已有 id 则复用，否则生成 _uid）
@@ -4746,6 +4789,7 @@ function _deleteSubspaceByIndex(idx) {
 
   // 2) 重建连线
   App._lastLinks = _rebuildLinksAfterRemove(App._lastLinks, idx);
+  stampSubspaceNamesOnAllLinks(App._lastLinks);   // ★ 重建后也写入
 
   // 清理选集
   for (const k of Array.from(App.persistentHexKeys)) {
