@@ -181,7 +181,31 @@ const summarizeSelected = async () => {
   // 2) panelIdx → 子空间名（尽力获取；不存在就回退）
   //   - 如果后端/数据层有 link.panelNamesByIndex 之类映射，可优先使用
   const panelNameByIdx = (props.link && props.link.panelNamesByIndex) || {};
-  const fallbackName = idx => panelNameByIdx[idx] || `Subspace ${idx}`;
+  const getDomNameMap = () => {
+    try {
+      const els = document.querySelectorAll('.subspace-title');
+      const m = {};
+      els.forEach((el, i) => {
+        const idxAttr = el.dataset?.panelIdx ?? el.getAttribute('data-panel-idx') ?? i;
+        const idx = Number.isFinite(Number(idxAttr)) ? Number(idxAttr) : i;
+        const raw =
+          (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? el.value :
+          el.isContentEditable ? el.innerText :
+          el.textContent;
+        const name = (raw || '').trim() || `Subspace ${idx}`;
+        m[idx] = name;
+      });
+      return m;
+    } catch { return {}; }
+  };
+
+  const fallbackName = (idx) => {
+    const p = panelNameByIdx[idx];
+    if (p) return p;
+    const dm = getDomNameMap();
+    return dm[idx] || `Subspace ${idx}`;
+  };
+
 
   // 3) 沿 path 顺序生成 hops（保序，不合并）
   const hops = [];
@@ -221,7 +245,7 @@ const summarizeSelected = async () => {
 
   try {
     llmLoading.value = true;
-    // ✅ 把“有序 hops”传给 API
+    // 把“有序 hops”传给 API
     const answer = await summarizeMsuSentences(hops);
     llmSummary.value =
       typeof answer === 'string' ? answer :

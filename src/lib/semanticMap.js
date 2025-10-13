@@ -1930,6 +1930,99 @@ function hideHexTooltip() {
   }
 
   // —— Subspace 名称工具 ——
+  // ========== 1) 从 DOM 抓取子空间名 ==========
+  function getPanelNameMapFromDOM() {
+    const map = {};
+    // .subspace-title 可能是 <div contenteditable> / <input> / <span> 等
+    const els = document.querySelectorAll('.subspace-title');
+    els.forEach((el, i) => {
+      // 面板索引：优先 data-panel-idx，其次 data-idx，再次顺序 i
+      const idxAttr = el.dataset?.panelIdx ?? el.getAttribute('data-panel-idx') ?? el.dataset?.idx ?? el.getAttribute('data-idx');
+      const panelIdx = Number.isFinite(Number(idxAttr)) ? Number(idxAttr) : i;
+
+      // 文本：优先 input.value；否则 contentEditable 的 innerText；否则 textContent
+      const raw =
+        (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? el.value :
+        el.isContentEditable ? el.innerText :
+        el.textContent;
+      const name = (raw || '').trim() || `Subspace ${panelIdx}`;
+
+      map[panelIdx] = name;
+    });
+    return map;
+  }
+
+  // ========== 2) 把子空间名“刻”到每条 link 上（可传入外部 map）==========
+  function stampSubspaceNamesOnAllLinksUsingMap(semantic, nameMap) {
+    if (!semantic || !Array.isArray(semantic.links)) return;
+    const nm = nameMap || {};
+
+    semantic.links.forEach(link => {
+      const path = Array.isArray(link?.path) ? link.path : [];
+
+      // 顶部显示（我默认做了“连续相同去重”，更友好；想完全不去重就去掉判重）
+      const ordered = [];
+      let last = null;
+
+      path.forEach(pt => {
+        const idx = pt?.panelIdx;
+        const title = (idx != null && nm[idx] != null) ? nm[idx] : `Subspace ${idx}`;
+        if (title !== last) ordered.push(title);
+        last = title;
+      });
+
+      link.panelNamesByIndex = { ...nm }; // 供 LinkCard 和 prompt 的 Legend 使用
+      link.panelNames = ordered;          // 顶部“Subspaces: A -> B -> C”显示
+    });
+  }
+
+  // ========== 3) 统一刷新：优先用 DOM 的名字，没有就退回数据里的 ==========
+  function refreshLinkNamesFromDOM() {
+    if (!window.App || !App.currentData) return;
+    const domMap = getPanelNameMapFromDOM();
+    // 如果 DOM 为空（例如页面尚未渲染好），退回旧方法
+    if (Object.keys(domMap).length === 0) {
+      // 旧方法：从数据层 build
+      const fallback = {};
+      (App.currentData.subspaces || []).forEach((s, i) => {
+        const name = s?.subspaceName || s?.title || s?.name || `Subspace ${i}`;
+        fallback[i] = name;
+      });
+      stampSubspaceNamesOnAllLinksUsingMap(App.currentData, fallback);
+    } else {
+      stampSubspaceNamesOnAllLinksUsingMap(App.currentData, domMap);
+    }
+  }
+
+  // ========== 4) 监听 DOM 里的标题变化，自动刷新 ==========
+  function watchSubspaceTitleDOM() {
+    try {
+      if (window.__subspaceTitleObserver) {
+        window.__subspaceTitleObserver.disconnect();
+        window.__subspaceTitleObserver = null;
+      }
+      const root = document.body; // 或者传你子空间容器根节点
+      const obs = new MutationObserver(() => {
+        refreshLinkNamesFromDOM();
+        // 2) 开启监听（用户改名后自动同步）
+        watchSubspaceTitleDOM();
+        // 如果你有事件总线导出给右侧卡片，可以一起发布
+        if (typeof publishToStepAnalysis === 'function') publishToStepAnalysis();
+      });
+      obs.observe(root, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['value', 'data-panel-idx', 'contenteditable']
+      });
+      window.__subspaceTitleObserver = obs;
+    } catch (e) {
+      console.warn('[watchSubspaceTitleDOM] failed:', e);
+    }
+  }
+
+
   // 生成 panelIdx -> subspaceName 的映射
   function getSubspaceNameMap() {
     const m = {};
@@ -1954,9 +2047,42 @@ function hideHexTooltip() {
     return link;
   }
 
-  // 批量写入当前画面里所有 links
-  function stampSubspaceNamesOnAllLinks(links) {
-    (links || []).forEach(stampSubspaceNamesOnLink);
+  // —— 从全量 semantic 数据建立 panelIdx → 子空间名 —— //
+  function buildPanelNameMap(semantic) {
+    const map = {};
+    const subs = (semantic && Array.isArray(semantic.subspaces)) ? semantic.subspaces : [];
+    subs.forEach(sp => {
+      const idx = (sp && sp.panelIdx != null) ? sp.panelIdx : null;
+      if (idx != null) {
+        // 数据里字段可能是 subspaceName 或 title，兼容两种
+        const name = sp.subspaceName || sp.title || `Subspace ${idx}`;
+        map[idx] = name;
+      }
+    });
+    return map;
+  }
+
+  // —— 把子空间名信息“刻到”每一条 link 上 —— //
+  function stampSubspaceNamesOnAllLinks(semantic) {
+    if (!semantic || !Array.isArray(semantic.links)) return;
+    const nameMap = buildPanelNameMap(semantic);
+
+    semantic.links.forEach(link => {
+      const path = Array.isArray(link?.path) ? link.path : [];
+      // 按路径顺序生成“子空间名序列”，并压缩连续重复（用于 LinkCard 顶部 meta 标签）
+      const orderedNames = [];
+      let last = null;
+      path.forEach(pt => {
+        const idx = (pt && pt.panelIdx != null) ? pt.panelIdx : null;
+        const name = (idx != null && nameMap[idx] != null) ? nameMap[idx] : `Subspace ${idx}`;
+        if (name !== last) orderedNames.push(name);
+        last = name;
+      });
+
+      // 给 LinkCard 用：
+      link.panelNamesByIndex = { ...nameMap };   // 索引→名称（供 summarize / 回退使用）
+      link.panelNames = orderedNames;            // “A -> B -> B -> C” 压缩成 “A -> B -> C” 的显示用
+    });
   }
 
 
@@ -2179,8 +2305,9 @@ function hideHexTooltip() {
       }
       // 可选：若 Alt 会影响即时上色（如“灰化非选中”），这里顺手刷新
       updateHexStyles?.();
-      
+
       stampSubspaceNamesOnAllLinks(App._lastLinks);
+      refreshLinkNamesFromDOM();
       publishToStepAnalysis?.();
 
       // 更新按钮视觉
@@ -4227,6 +4354,7 @@ function updateHexStyles() {
     drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
     emitSelectionPayload?.();          // nodes/edges/kind
     updateHexStyles();
+    refreshLinkNamesFromDOM();
     publishToStepAnalysis?.();
   }
    function commitRouteDraft() {
