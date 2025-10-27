@@ -2992,6 +2992,7 @@ function hideHexTooltip() {
 
     // 容器组
     let container = svg.select('g');
+
     if (container.empty()) container = svg.append('g');
     // 数据坐标（平顶六边形）
     const rawHexList = (space.hexList || []).map(h => {
@@ -3029,7 +3030,7 @@ function hideHexTooltip() {
     // 初始/持久化变换
     const savedZoom = App.panelStates[panelIdx]?.zoom;
     const defaultTransform = d3.zoomIdentity
-      .translate((width / 2) - centerX, (height / 2) - centerY/2)
+      .translate((width / 2) - centerX/2, (height / 2) - centerY/2)
       .scale(0.6);
 
     let lastTransform =
