@@ -1,6 +1,6 @@
 // src/api/chat.js
 export async function chatOnce({ query, messages } = {}) {
-  const res = await fetch('/api/chat', {
+  const res = await fetch('/api/query', {
     method: 'POST',
     headers: { 'Content-Type':'application/json' },
     body: JSON.stringify({ query, messages, stream: false })
@@ -9,7 +9,19 @@ export async function chatOnce({ query, messages } = {}) {
     const err = await res.json().catch(()=> ({}));
     throw new Error(err.error || `Chat failed: ${res.status}`);
   }
-  return res.json(); // { id, answer, usage? }
+  const data = await res.json();
+  try {
+    // 自动把子空间控制指令转发到 UI
+    if (data && data.mode === 'subspace/control') {
+      const ctrl = window.SemanticMapCtrl;         // 由 semanticMap 初始化时暴露
+      const router = window.CommandRouter;         // 由 commandRouter.js 末尾挂全局
+      const text = data.payload?.text || data.payload?.command || '';
+      if (ctrl && router && text) {
+        router.routeCommand(ctrl, text);
+      }
+    }
+  } catch (_) {}
+  return data;
 }
 
 // 可选：流式（SSE）

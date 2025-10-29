@@ -1,6 +1,6 @@
 <!-- src/components/MainView.vue（只展示需要改的部分） -->
 <script setup>
-import { onMounted, onBeforeUnmount, ref, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, ref, nextTick, provide } from 'vue'
 import { initSemanticMap } from '../lib/semanticMap'
 import { fetchSemanticMap, createSubspace, renameSubspace, renameMapTitle } from '../lib/api'
 import { emitSelectionSaved } from '../lib/selectionBus'
@@ -21,8 +21,14 @@ onMounted(async () => {
     playgroundEl: playgroundRef.value,
     globalOverlayEl: globalOverlayRef.value,
     mainTitleEl: mainTitleRef.value,
-    initialData: data
+    initialData: data,
+    initialHidden: true 
   })
+  provide('SemanticMapCtrl', controller)
+  // 让 ChatPanel 的命令路由可以拿到控制器
+  window.SemanticMapCtrl = controller
+  window.dispatchEvent(new CustomEvent('semanticMap:ready')) 
+
   controller.setOnSubspaceRename(async (idx, newName) => {
     await renameSubspace(idx, newName)
   })
@@ -33,7 +39,12 @@ onMounted(async () => {
   ready.value = true
 })
 
-onBeforeUnmount(() => controller?.cleanup?.())
+onBeforeUnmount(() => {
+  controller?.cleanup?.()
+  if (window.SemanticMapCtrl === controller) {
+    delete window.SemanticMapCtrl
+  }
+})
 
 async function onAddSubspace() {
   if (!ready.value || !controller) return

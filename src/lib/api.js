@@ -1,3 +1,5 @@
+import './commandRouter.js';
+
 export async function fetchSemanticMap() {
   const res = await fetch('/api/semantic-map');
   if (!res.ok) throw new Error('Failed to load semantic map');
@@ -40,23 +42,60 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
     body: JSON.stringify({ query, model: llm === 'QWen' ? 'qwen-turbo' : 'gpt-3.5-turbo' })
   });
   const ct = res.headers.get('content-type') || '';
-  if (ct.includes('text/plain')) {
-    const text = await res.text();
-    if (!res.ok) throw new Error(text || 'Request failed');
-    return text; // ✅ 直接返回纯文本答案
-  } else {
+
+  // --- JSON 返回：可能是 RAG / subspace-control / error 等 ---
+  if (ct.includes('application/json')) {
     const data = await res.json();
     if (!res.ok) {
       const msg = data?.payload?.message || data?.error || 'Request failed';
       throw new Error(msg);
     }
-    // 仅在列项目/建索引等非回答场景会走到这里
+
+    // ⭐ 新增：若是“子空间显隐”模式，直接路由并返回一个轻量结果
+    if (data?.mode === 'subspace/control') {
+      const cmd = data?.payload?.text || data?.payload?.command || '';
+
+      // ⭐ 如果路由器还没在 window 上，先动态导入一遍（副作用执行）
+      if (!window.CommandRouter) {
+        try {
+          await import('./commandRouter.js');  // 路径同上
+        } catch (e) {
+          console.warn('[sendQueryToLLM] lazy-load commandRouter failed:', e);
+        }
+      }
+
+      if (window.CommandRouter && window.SemanticMapCtrl && cmd) {
+        try {
+          window.CommandRouter.routeCommand(window.SemanticMapCtrl, cmd);
+        } catch (err) {
+          console.error('[sendQueryToLLM] subspace/control route error:', err);
+        }
+      } else {
+        // 地图或路由器还没就绪：排队，commandRouter 会在 semanticMap:ready 时冲掉
+        window.__pendingSubspaceCmds = window.__pendingSubspaceCmds || [];
+        window.__pendingSubspaceCmds.push(cmd);
+        console.warn('[sendQueryToLLM] subspace/control missing router/ctrl/cmd', {
+          cmd,
+          hasCtrl: !!window.SemanticMapCtrl,
+          hasRouter: !!window.CommandRouter
+        });
+      }
+      return { mode: 'subspace/control', ok: true, command: cmd };
+    }
+
+    // 其他 JSON：直接返回给上层 interpretLLMResponse 使用
     return data;
   }
 
+  // --- 纯文本返回（plain chat） ---
+  const text = await res.text();
+  if (!res.ok) throw new Error(text || 'Request failed');
+  return text; // ✅ 直接返回纯文本答案
 }
 
+
 // 新增：总结MSU句子的函数
+// 新增：总结MSU句子的函数（修正版：不再用 task:'subspace'）
 export async function summarizeMsuSentences(hopsOrGroups) {
   // ---------- 规范化 hops ----------
   const normalize = (arr) => {
@@ -127,69 +166,125 @@ ${hopsBlock || '(none)'}
 
 REQUIRED OUTPUT (single JSON object only):
 {"RouteSummary": "<80–140 words overview that integrates key points and notes any important cross-subspace transitions>"}
-`.trim();
+  `.trim();
 
-  // ---------- 请求 ----------
-  let text = '';
+  // ---------- 请求（改动点：task 用 'literature'；按内容类型分流） ----------
   try {
     const res = await fetch('/api/query', {
       method: 'POST',
       headers: { 'Content-Type':'application/json' },
       body: JSON.stringify({
         query: prompt,
-        task: 'subspace',
-        model: 'gpt-3.5-turbo'
+        task: 'literature',     // ✨ 关键：这是一条“摘要”任务，不能用 'subspace'
+        model: 'gpt-4o'         // 或你习惯的模型
       })
     });
     if (!res.ok) throw new Error('API request failed');
-    text = (await res.text()).trim();
+
+    const ct = res.headers.get('content-type') || '';
+
+    // 如果后端万一返回了 JSON（例如其它模式），先判断是否 UI 控制
+    if (ct.includes('application/json')) {
+      const data = await res.json();
+
+      // 若意外返回了 subspace/control（比如你把 prompt 改成了显隐语句）
+      if (data?.mode === 'subspace/control') {
+        const cmd = data?.payload?.text || data?.payload?.command || '';
+        if (window.CommandRouter && window.SemanticMapCtrl && cmd) {
+          window.CommandRouter.routeCommand(window.SemanticMapCtrl, cmd);
+        }
+        return ''; // 不把控制指令当摘要展示
+      }
+
+      // 其它 JSON（如 rag/index 等）——这里不是本函数关注点，直接字符串化返回或丢空
+      return typeof data === 'string' ? data : JSON.stringify(data);
+    }
+
+    // ---------- 纯文本：解析 RouteSummary ----------
+    const text = (await res.text()).trim();
+
+    const stripCodeFences = (s) =>
+      s.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+
+    const tryParseRouteSummary = (raw) => {
+      // 1) 去掉三引号
+      let s = stripCodeFences(raw);
+      // 2) 去掉常见前缀
+      s = s.replace(/^\s*summary\s*:\s*/i, '').trim();
+      // 3) 尝试 JSON.parse
+      try {
+        const obj = JSON.parse(s);
+        if (obj && typeof obj.RouteSummary === 'string' && obj.RouteSummary.trim()) {
+          return obj.RouteSummary.trim();
+        }
+        if (Array.isArray(obj) && obj.length) {
+          const units = obj.map(x => (typeof x?.unit === 'string' ? x.unit.trim() : '')).filter(Boolean);
+          if (units.length) return units.join('; ');
+        }
+        const candidate = obj.summary || obj.Summary || obj.routeSummary || obj.abstract || obj.text;
+        if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+        return JSON.stringify(obj);
+      } catch {
+        return s; // 不是 JSON，就当纯文本返回
+      }
+    };
+
+    return tryParseRouteSummary(text);
+
   } catch (e) {
     console.error('Summary generation error:', e);
     return '';
   }
+}
 
-  // ---------- 解析：剥掉代码块/多余前后缀，只取 RouteSummary ----------
-  const stripCodeFences = (s) =>
-    s.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+// === 子空间显隐：独立调用 ===
+// 说明：这是“高优先级 UI 控制”专用的 API 封装。
+// naturalText 例如： "show background and result subspaces"
+export async function runSubspaceCommand(naturalText) {
+  const res = await fetch('/api/query', {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify({
+      query: naturalText,
+      task: 'subspace',      // 关键：命中后端最高优先级 UI 控制分支
+      model: 'gpt-4o'        // 或你习惯的模型名
+    })
+  });
 
-  const tryParseRouteSummary = (raw) => {
-    // 1) 先去掉三引号代码块
-    let s = stripCodeFences(raw);
+  const ct = res.headers.get('content-type') || '';
+  if (!res.ok) {
+    const msg = ct.includes('application/json') ? (await res.json())?.error : await res.text();
+    throw new Error(msg || 'Subspace command failed');
+  }
 
-    // 2) 有时模型会在 JSON 前加 "Summary:" 之类，清掉常见前缀
-    s = s.replace(/^\s*summary\s*:\s*/i, '').trim();
+  if (!ct.includes('application/json')) {
+    console.warn('[subspace/control] Expect JSON but got text; ignoring.');
+    return false;
+  }
 
-    // 3) 直接尝试 JSON.parse
-    try {
-      const obj = JSON.parse(s);
-
-      // 3a) 标准：{ RouteSummary: "..." }
-      if (obj && typeof obj.RouteSummary === 'string' && obj.RouteSummary.trim()) {
-        return obj.RouteSummary.trim();
+  const data = await res.json();
+  if (data?.mode === 'subspace/control') {
+    const cmd = data?.payload?.text || data?.payload?.command || '';
+    if (window.CommandRouter && window.SemanticMapCtrl && cmd) {
+      try {
+        window.CommandRouter.routeCommand(window.SemanticMapCtrl, cmd);
+      } catch (err) {
+        console.error('[subspace/control] route error:', err);
+        return false;
       }
-
-      // 3b) 退路1：返回成数组 [{unit, type}...] → 把 unit 串起来
-      if (Array.isArray(obj) && obj.length) {
-        const units = obj
-          .map(x => (typeof x?.unit === 'string' ? x.unit.trim() : ''))
-          .filter(Boolean);
-        if (units.length) return units.join('; ');
-      }
-
-      // 3c) 退路2：对象其他键里找最像摘要的字段
-      const candidate =
-        obj.summary || obj.Summary || obj.routeSummary || obj.abstract || obj.text;
-      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-
-      // 3d) 退路3：任意把对象压成一行文本
-      return JSON.stringify(obj);
-    } catch {
-      // 4) 不是 JSON：直接返回纯文本
-      return s;
+      return true;
+    } else {
+      console.warn('[subspace/control] Missing router/ctrl/cmd', {
+        hasRouter: !!window.CommandRouter,
+        hasCtrl: !!window.SemanticMapCtrl,
+        cmd
+      });
+      return false;
     }
-  };
+  }
 
-  return tryParseRouteSummary(text);
+  console.warn('[subspace/control] Unexpected response:', data);
+  return false;
 }
 
 
@@ -216,7 +311,7 @@ export async function buildRagIndex(projectId, rebuild = false) {
 
 // === RAG：提问 ===
 export async function askRag(projectId, question, { k = 5, mmr = false } = {}) {
-  const res = await fetch('/api/rag/query', {
+  const res = await fetch('/api/query', {
     method: 'POST',
     headers: { 'Content-Type':'application/json' },
     body: JSON.stringify({ project_id: projectId, question, k, mmr })
@@ -233,6 +328,10 @@ export function interpretLLMResponse(envelope) {
   switch (mode) {
     case 'chat':
       return { type: 'text', text: payload?.answer || '' };
+
+    case 'subspace/control':
+      // 已在 sendQueryToLLM 中做过实际路由，这里只回个占位结果给 UI（可选）
+      return { type: 'subspace-control', text: '', command: payload?.text || payload?.command || '' };
 
     case 'rag/projects':
       // 展示项目列表

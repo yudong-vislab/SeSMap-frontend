@@ -152,8 +152,10 @@ export async function initSemanticMap({
   playgroundEl,
   globalOverlayEl,
   mainTitleEl,
-  initialData
+  initialData,
+  initialHidden = true
 }) {
+
   playgroundEl = playgroundEl || document.getElementById('playground');
   globalOverlayEl = globalOverlayEl || document.getElementById('global-overlay');
   if (!playgroundEl || !globalOverlayEl) {
@@ -270,7 +272,12 @@ export async function initSemanticMap({
     
     routeDraft: null,
 
-  };
+  }
+  // record initialHidden flag
+  App.initialHidden = !!initialHidden;
+  
+  // 3) 提前“声明”一个 controller 变量，供后面闭包引用（避免 TDZ）
+  let controller;
 
   const cleanupFns = [];
 
@@ -368,6 +375,39 @@ export async function initSemanticMap({
     });
     return out;
   }
+
+  // ===== 可见性控制 & 名称索引 =====
+function setVisible(el, on) {
+  if (!el) return;
+  el.dataset.visible = on ? '1' : '0';
+  // 若你项目是用 class 控制，也可改成 el.classList.toggle('hidden', !on)
+  el.style.display = on ? '' : 'none';
+}
+
+function getAllSubspaceEls(rootEl) {
+  // 你的每个子空间根节点 className 若不是 '.subspace'，请改成实际 class
+  return Array.from(rootEl.querySelectorAll('.subspace'));
+}
+
+function readSubspaceName(el) {
+  // 标题节点 class 若不是 '.subspace-title'，请改成实际 class
+  const t = el.querySelector('.subspace-title');
+  const raw = (t?.textContent || '').trim();
+  return raw || el.getAttribute('data-subspace-name') || '';
+}
+
+function buildNameIndex(rootEl) {
+  const map = new Map(); // name(lower) -> [idx1, idx2...]
+  const els = getAllSubspaceEls(rootEl);
+  els.forEach((el, i) => {
+    const name = readSubspaceName(el);
+    const key = name.toLowerCase();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(i);
+  });
+  return { els, map };
+}
+
   
 function emitHexClick(panelIdx, q, r, d) {
   try {
@@ -4656,6 +4696,19 @@ function observePanelResize() {
     // 初次渲染后
     applyResponsiveLayout(true);
 
+    // after applyResponsiveLayout(true) —— 首轮布局完成后兜底隐藏
+    if (!App._didInitialHide && (App.initialHidden ?? true)) {
+      App._didInitialHide = true;
+      const nodes = App.playgroundEl?.querySelectorAll?.('.subspace');
+      if (nodes && nodes.forEach) {
+        nodes.forEach(n => (n.style.display = 'none'));
+      }
+      // 同步隐藏集，确保控制器状态一致
+      App.hiddenPanelIdxes = new Set(
+        (App.currentData?.subspaces || []).map((_, i) => i)
+      );
+    }
+
     const resizeHandler = () => {
       (data.subspaces || []).forEach((space, i) => renderHexGridFromData(i, space, App.config.hex.radius));
       drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!App.flightStart);
@@ -4758,8 +4811,6 @@ function observePanelResize() {
     App.playgroundEl.removeEventListener('dblclick', onBlankDblClick);
   });
 
-  // 首次渲染
-  renderSemanticMapFromData(initialData || { subspaces: [], links: [] });
   App.globalOverlayEl.setAttribute('width', App.playgroundEl.clientWidth);
   App.globalOverlayEl.setAttribute('height', App.playgroundEl.clientHeight);
 
@@ -4948,27 +4999,11 @@ function _deleteSubspaceByIndex(idx) {
   });
 }
 
-// 把当前主视图里“面板级国家颜色覆盖”整理成两张映射表：
-// - byPanel: { "panelIdx|countryId": "#RRGGBB", ... }（优先）
-// - byCountry: { countryId: "#RRGGBB", ... }（可留空/备用）
-function exportMiniColorMaps() {
-  const byPanel = {};   // 面板+国家 优先映射
-  App.panelCountryColors.forEach((countryMap, panelIdx) => {
-    countryMap.forEach((rec, countryIdRaw) => {
-      const cid = normalizeCountryId(countryIdRaw);
-      byPanel[`${panelIdx}|${cid}`] = rec?.color || '#FFFFFF';
-    });
-  });
-
-  // 如果你暂时没有“全局国家色”，可以先留空对象
-  const byCountry = {};
-  return { byPanel, byCountry };
-}
 
   /* =========================
    * 对外 API
    * ========================= */
-  const controller = {
+  controller = {
     cleanup() {
       cleanupFns.forEach(fn => fn && fn());
       d3.select(App.globalOverlayEl).selectAll('*').remove();
@@ -5136,9 +5171,107 @@ function exportMiniColorMaps() {
         };
       },
 
+      // === 查询能力 ===
+      getSubspaceCount() {
+        return (App?.currentData?.subspaces || []).length;
+      },
+      getSubspaceNames() {
+        const arr = App?.currentData?.subspaces || [];
+        return arr.map((s, i) => (s?.subspaceName || s?.title || `Subspace ${i}`));
+      },
+      findSubspaceIndicesByNames(names = []) {
+        const wanted = new Set(
+          names.map(x => String(x).trim().toLowerCase()).filter(Boolean)
+        );
+        const arr = this.getSubspaceNames();
+        const hits = [];
+        arr.forEach((nm, i) => {
+          if (wanted.has(nm.toLowerCase())) hits.push(i);
+        });
+        return hits;
+      },
+
+      // === 显隐控制（重写/新增） ===
+      hideAllSubspaces() {
+        const nodes = App.playgroundEl.querySelectorAll('.subspace');
+        nodes.forEach(n => n.style.display = 'none');
+
+        // 清空全局连线/样式（避免空白时残留）
+        drawOverlayLinesFromLinks([], App.allHexDataByPanel, App.hexMapsByPanel, false);
+        updateHexStyles?.();
+        applyResponsiveLayout?.(true);
+      },
+
+      /**
+       * 只显示给定索引的子空间；若传空数组 => 全部隐藏
+       * @param {number[]} indices
+       * @param {{reflow?: boolean}} opts
+       */
+      showOnlySubspaces(indices = [], opts = { reflow: true }) {
+        const set = new Set(indices || []);
+        const nodes = App.playgroundEl.querySelectorAll('.subspace');
+
+        nodes.forEach(n => {
+          const idx = Number(n.dataset.index || -1);
+          n.style.display = (set.size > 0 && set.has(idx)) ? '' : 'none';
+        });
+
+        // 只针对可见面板重绘连线/样式
+        const visibleIdx = [...set];
+        const links = (App._lastLinks || []).filter(l => {
+          // 如果你的 Link 有 panel 信息，可在此根据 visibleIdx 过滤；没有就直接保留
+          return true;
+        });
+        drawOverlayLinesFromLinks(links, App.allHexDataByPanel, App.hexMapsByPanel, !!(App.flightStart || App.flightDraft));
+        updateHexStyles?.();
+        if (opts.reflow) applyResponsiveLayout?.(true);
+      },
+
+      /**
+       * 显示全部子空间
+       * @param {{reflow?: boolean}} opts
+       */
+      showAllSubspaces(opts = { reflow: true }) {
+        const nodes = App.playgroundEl.querySelectorAll('.subspace');
+        nodes.forEach(n => n.style.display = '');
+
+        drawOverlayLinesFromLinks(App._lastLinks, App.allHexDataByPanel, App.hexMapsByPanel, !!(App.flightStart || App.flightDraft));
+        updateHexStyles?.();
+        if (opts.reflow) applyResponsiveLayout?.(true);
+      },
+
+
+      // === 批量删除（按名或索引）===
+      deleteSubspacesByNameOrIdx(targets = []) {
+        if (!targets?.length) return;
+        const names = this.getSubspaceNames();
+        const toIdx = new Set();
+        for (const t of targets) {
+          if (typeof t === 'number' && Number.isFinite(t)) {
+            toIdx.add(t);
+          } else {
+            const k = String(t).trim().toLowerCase();
+            names.forEach((nm, i) => { if (nm.toLowerCase() === k) toIdx.add(i); });
+          }
+        }
+        // 注意：从后往前删，避免索引位移
+        [...toIdx].sort((a,b)=>b-a).forEach(i => _deleteSubspaceByIndex(i));
+      }
 
   };
 
+  // —— 首次渲染 & 初始显隐 —— //
+  renderSemanticMapFromData(initialData || defaultData);
+  if (App.initialHidden) {
+    controller.hideAllSubspaces();
+  } else {
+    controller.showAllSubspaces({ reflow: true });
+  }
+
+  // === 暴露控制器 & 广播就绪 ===
+  // —— 暴露控制器 & 广播就绪 —— //
+  window.SemanticMapCtrl = controller;
+  window.dispatchEvent(new CustomEvent('semanticMap:ready'));
   return controller;
 }
 
