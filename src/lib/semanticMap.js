@@ -278,12 +278,72 @@ export async function initSemanticMap({
   
   // 3) 提前“声明”一个 controller 变量，供后面闭包引用（避免 TDZ）
   let controller;
-
   const cleanupFns = [];
 
   /* =========================
    * 小工具
    * ========================= */
+  // ======== Fuzzy helpers（放在 controller 定义的同一作用域）========
+  const __getSubspaceEls = () =>
+    Array.from((App?.playgroundEl || document).querySelectorAll('.subspace'));
+
+  const __getDomTitles = () =>
+    __getSubspaceEls().map(el => {
+      const t = el.querySelector('.subspace-title');
+      return (t?.textContent || '').trim();
+    });
+
+  // 简单标准化：小写、去标点、合并空白、粗糙单复数归一
+  function __normalize(s) {
+    let x = String(s || '').toLowerCase().trim();
+    x = x.normalize('NFKC');
+    x = x.replace(/[，。、《》【】（）()“”"'`·:;|/\\]+/g, ' ');
+    x = x.replace(/\s+/g, ' ').trim();
+    if (x.endsWith('ies')) x = x.slice(0, -3) + 'y';
+    else if (x.endsWith('ses')) x = x.slice(0, -2);
+    else if (x.endsWith('s') && x.length > 3) x = x.slice(0, -1);
+    return x;
+  }
+
+  // 容错：编辑距离 ≤ 1 认为近似
+  function __lev1(a, b) {
+    const m = a.length, n = b.length;
+    if (Math.abs(m - n) > 1) return 2;
+    let i = 0, j = 0, edits = 0;
+    while (i < m && j < n) {
+      if (a[i] === b[j]) { i++; j++; continue; }
+      if (++edits > 1) return edits;
+      if (m > n) i++; else if (m < n) j++; else { i++; j++; }
+    }
+    if (i < m || j < n) edits++;
+    return edits;
+  }
+
+  // 可扩展别名表（中英都放进来）
+  const __ALIASES = {
+    background: ['bg', '背景', 'intro', 'introduction', '研究背景'],
+    method:     ['methods', '方法', 'approach', 'technique', '方法学'],
+    result:     ['results', '结论', '结果', 'finding', 'findings', 'outcome', '研究结果'],
+    experiment: ['experiments', '实验', 'exp'],
+    discussion: ['discussions', '讨论'],
+    conclusion: ['conclusions', '总结'],
+    related:    ['related work', 'relatedwork', '相关工作', 'rw']
+  };
+
+  // 归一到规范化空间
+  const __aliasCanon = new Map();          // canon -> Set(aliases)
+  const __aliasReverse = new Map();        // alias -> Set(canons)
+  Object.entries(__ALIASES).forEach(([k, arr]) => {
+    const canon = __normalize(k);
+    const set = new Set([canon, ...arr.map(__normalize)]);
+    __aliasCanon.set(canon, set);
+    set.forEach(a => {
+      if (!__aliasReverse.has(a)) __aliasReverse.set(a, new Set());
+      __aliasReverse.get(a).add(canon);
+    });
+  });
+
+
   const pkey = (panelIdx, q, r) => `${panelIdx}|${q},${r}`;
   // const pointId = (panelIdx, q, r) => `${panelIdx}:${q},${r}`;
   const isCtrlLike = (e) => !!(e.metaKey || e.ctrlKey);
@@ -5179,18 +5239,7 @@ function _deleteSubspaceByIndex(idx) {
         const arr = App?.currentData?.subspaces || [];
         return arr.map((s, i) => (s?.subspaceName || s?.title || `Subspace ${i}`));
       },
-      findSubspaceIndicesByNames(names = []) {
-        const wanted = new Set(
-          names.map(x => String(x).trim().toLowerCase()).filter(Boolean)
-        );
-        const arr = this.getSubspaceNames();
-        const hits = [];
-        arr.forEach((nm, i) => {
-          if (wanted.has(nm.toLowerCase())) hits.push(i);
-        });
-        return hits;
-      },
-
+      
       // === 显隐控制（重写/新增） ===
       hideAllSubspaces() {
         const nodes = App.playgroundEl.querySelectorAll('.subspace');
@@ -5201,6 +5250,98 @@ function _deleteSubspaceByIndex(idx) {
         updateHexStyles?.();
         applyResponsiveLayout?.(true);
       },
+
+      /**
+       * 根据名字数组，返回应显示的 panel 索引（支持多名字、模糊、别名）
+       * @param {string[]} names
+       * @returns {number[]}
+       */
+      findSubspaceIndicesByNames(names = []) {
+        const queries = (Array.isArray(names) ? names : [names])
+          .map(__normalize).filter(Boolean);
+        if (!queries.length) return [];
+
+        // 1) 标题来源：优先用 DOM（用户可编辑），退回数据模型
+        const titlesDom = __getDomTitles().map(__normalize);
+        const titlesData = (this.getSubspaceNames?.() || [])
+          .map(__normalize);
+
+        // 做一份候选（索引与 label）
+        const maxLen = Math.max(titlesDom.length, titlesData.length);
+        const candidates = [];
+        for (let i = 0; i < maxLen; i++) {
+          const lbl = titlesDom[i] || titlesData[i] || '';
+          candidates.push({ i, label: lbl });
+        }
+
+        const picked = new Set();
+
+        // Pass 0: 完全相等
+        queries.forEach(q => {
+          candidates.forEach(c => { if (c.label === q) picked.add(c.i); });
+        });
+
+        // Pass 1: 包含 / 前缀（长度>=3再做，避免太松）
+        queries.forEach(q => {
+          if (q.length < 3) return;
+          candidates.forEach(c => {
+            if (picked.has(c.i)) return;
+            if (c.label.includes(q) || c.label.startsWith(q)) picked.add(c.i);
+          });
+        });
+
+        // Pass 2: 别名匹配
+        queries.forEach(q => {
+          const canons = __aliasReverse.get(q) || new Set([q]); // q 可能本身就是 canon
+          candidates.forEach(c => {
+            if (picked.has(c.i)) return;
+            for (const canon of canons) {
+              const aset = __aliasCanon.get(canon) || new Set([canon]);
+              if (aset.has(c.label)) { picked.add(c.i); break; }
+              // alias 集内的包含匹配
+              for (const a of aset) { if (a.length >= 3 && c.label.includes(a)) { picked.add(c.i); break; } }
+            }
+          });
+        });
+
+        // Pass 3: 轻微拼写错误（编辑距离 ≤ 1）
+        queries.forEach(q => {
+          candidates.forEach(c => {
+            if (picked.has(c.i)) return;
+            if (__lev1(q, c.label) <= 1) picked.add(c.i);
+          });
+        });
+
+        return Array.from(picked.values()).sort((a, b) => a - b);
+      },
+
+      /**
+       * 只显示给定索引的子空间（支持 0~N 个；空数组=全隐藏）
+       * @param {number[]} indices
+       * @param {{reflow?: boolean}} opts
+       */
+      showOnlySubspaces(indices = [], opts = { reflow: true }) {
+        const set = new Set(indices || []);
+        const nodes = App.playgroundEl.querySelectorAll('.subspace');
+
+        // ⭐ 兜底：若渲染阶段没打上 data-index，这里补齐（防止全显/全隐）
+        nodes.forEach((n, i) => {
+          if (!n.dataset.index) n.dataset.index = String(i);
+        });
+
+        nodes.forEach(n => {
+          const idx = Number(n.dataset.index || -1);
+          n.style.display = (set.size > 0 && set.has(idx)) ? '' : 'none';
+          n.dataset.visible = (set.size > 0 && set.has(idx)) ? '1' : '0';
+        });
+
+        // 只针对可见面板重绘连线/样式
+        const links = (App._lastLinks || []); // 如需按 panel 过滤，可在此结合 indices 处理
+        drawOverlayLinesFromLinks(links, App.allHexDataByPanel, App.hexMapsByPanel, !!(App.flightStart || App.flightDraft));
+        updateHexStyles?.();
+        if (opts.reflow) applyResponsiveLayout?.(true);
+      },
+
 
       /**
        * 只显示给定索引的子空间；若传空数组 => 全部隐藏
