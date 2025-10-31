@@ -94,7 +94,6 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
 }
 
 
-// 新增：总结MSU句子的函数
 // 新增：总结MSU句子的函数（修正版：不再用 task:'subspace'）
 export async function summarizeMsuSentences(hopsOrGroups) {
   // ---------- 规范化 hops ----------
@@ -176,7 +175,7 @@ REQUIRED OUTPUT (single JSON object only):
       body: JSON.stringify({
         query: prompt,
         task: 'literature',     // ✨ 关键：这是一条“摘要”任务，不能用 'subspace'
-        model: 'gpt-4o'         // 或你习惯的模型
+        model: 'gpt-3.5-turbo'         // 或你习惯的模型
       })
     });
     if (!res.ok) throw new Error('API request failed');
@@ -247,7 +246,7 @@ export async function runSubspaceCommand(naturalText) {
     body: JSON.stringify({
       query: naturalText,
       task: 'subspace',      // 关键：命中后端最高优先级 UI 控制分支
-      model: 'gpt-4o'        // 或你习惯的模型名
+      model: 'gpt-3.5-turbo'        // 或你习惯的模型名
     })
   });
 
