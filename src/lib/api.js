@@ -35,11 +35,18 @@ export async function renameMapTitle(newTitle){
   })
 }
 
-export async function sendQueryToLLM(query, llm = 'ChatGPT') {
+export async function sendQueryToLLM(query, llm = 'ChatGPT', opts = {}) {
   const res = await fetch('/api/query', {
     method: 'POST',
     headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify({ query, model: llm === 'QWen' ? 'qwen-turbo' : 'gpt-3.5-turbo' })
+         body: JSON.stringify({
+       query,
+       model: llm === 'QWen' ? 'qwen-turbo' : 'gpt-3.5-turbo',
+       // 允许前端把最近几轮 messages 直接传给后端
+       messages: Array.isArray(opts.messages) ? opts.messages : undefined,
+       task: opts.task || undefined
+     })
+  
   });
   const ct = res.headers.get('content-type') || '';
 

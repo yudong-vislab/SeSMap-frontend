@@ -248,7 +248,7 @@ function showFolder(folder) {
   messages.value.push({
     role:'assistant',
     type:'markdown',
-    text:`**Showing \`${folder}\`** — ${imgs.length} image(s) in Paper Gallery.`
+    text:`Showing \`${folder}\`** — ${imgs.length} image(s) in Paper Gallery.`
   })
 }
 
