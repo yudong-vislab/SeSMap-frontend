@@ -7,6 +7,8 @@ const props = defineProps({
   title: { type: String, default: 'Paper Query' },
   /** 论文项：[{ id, globalIndex, name, year, count, content(imgUrl), pdfUrl }] */
   items: { type: Array, default: () => [] },
+  /** items 为空时是否启用内置 demo（默认 false） */
+  useDemo: { type: Boolean, default: false },
   /** 有选中时，其它项透明度 */
   dimOpacity: { type: Number, default: 0.15 },
   /** v-model:selected-ids（用 globalIndex 做主键） */
@@ -41,8 +43,9 @@ const demoItems = [
     content: new URL(`../assets/pictures/case_2/5_page_2_Figure_4.jpeg`, import.meta.url).href,
     pdfUrl: new URL(`../assets/pdf/case2/5_atmosphere-07-00035.pdf`, import.meta.url).href },
 ]
-const displayItems = computed(() => (props.items?.length ? props.items : demoItems))
-
+const displayItems = computed(() =>
+  (props.items && props.items.length) ? props.items : (props.useDemo ? demoItems : [])
+)
 /* ---------- 标题编辑（与右端交互一致） ---------- */
 const editing = ref(false)
 const titleLocal = ref(props.title)
@@ -115,7 +118,7 @@ const gridVars = computed(() => {
         @dblclick="startEdit"
         @blur="finishEdit"
         @keydown="onTitleKey"
-        :title="editing ? 'Enter保存 · Esc取消' : '双击编辑标题'"
+        :title="editing ? 'Enter to save · Esc to cancel' : 'Double-click to edit'"
       >
         {{ titleLocal }}
       </div>
@@ -135,7 +138,7 @@ const gridVars = computed(() => {
             @click.stop="toggleSelect(it.globalIndex)"
             :title="it.name"
           >
-            <div class="thumb" :style="{ backgroundImage: `url(${it.content})` }">
+            <div class="thumb" :style="{ backgroundImage: `url(${it.content || it.thumbUrl || ''})` }">
               <button class="eye-btn" @click.stop="openPdf(it)" title="Preview PDF" aria-label="Preview">
                 <svg viewBox="0 0 24 24" class="eye-svg" aria-hidden="true">
                   <path d="M12 4.5c-6.627 0-12 7.072-12 7.5s5.373 7.5 12 7.5 12-7.072 12-7.5-5.373-7.5-12-7.5zm0 12c-2.485 0-4.5-2.015-4.5-4.5s2.015-4.5 4.5-4.5 4.5 2.015 4.5 4.5-2.015 4.5-4.5 4.5zm0-7.5c-1.657 0-3 1.343-3 3s1.343 3 3 3 3-1.343 3-3-1.343-3-3-3z"/>
@@ -143,7 +146,7 @@ const gridVars = computed(() => {
               </button>
             </div>
             <div class="meta">
-                <span class="title">{{ it.name }}</span>
+                <span class="title">{{ it.name || it.title }}</span>
             </div>
           </div>
         </div>

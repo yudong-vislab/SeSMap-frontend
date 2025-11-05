@@ -96,6 +96,7 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT') {
 
 // 新增：总结MSU句子的函数（修正版：不再用 task:'subspace'）
 export async function summarizeMsuSentences(hopsOrGroups) {
+  console.log(hopsOrGroups)
   // ---------- 规范化 hops ----------
   const normalize = (arr) => {
     const hasHopShape = arr?.some(x => 'step' in x || 'panelIdx' in x || 'subspace' in x);
@@ -142,29 +143,32 @@ export async function summarizeMsuSentences(hopsOrGroups) {
 
   // ---------- 提示词：只返回 RouteSummary + 禁止代码块 ----------
   const prompt = `
-You are given an ordered flight across a semantic map. Each hop is an HSU node belonging to a subspace.
-Each hop includes one or more MSU sentences selected by the user.
+You are given an ordered flight link across a semantic map.
+Each hop is an HSU in a specific subspace (panelIdx), containing one or more user-selected MSU sentences.
 
-GOALS:
-- Produce a faithful, concise-but-informative overview that RESPECTS the original hop order.
-- Emphasize major shifts when crossing subspaces (panelIdx changes), but never invent facts.
-- Summarize the substance across hops; do NOT list hops one by one.
+TASK
+Write a faithful, information-dense overview that is derived ONLY from the MSUs below. Follow the hop order to preserve temporal/causal/argument flow. If panelIdx changes, describe it briefly as a shift in perspective/focus/topic—only when evident from MSUs.
 
-CONSTRAINTS (Very Important):
-1) Preserve the logic implied by hop order (temporal/causal/argument flow).
-2) Base ONLY on the provided MSU sentences (no hallucination).
-3) Output MUST be a SINGLE JSON object with EXACTLY ONE key: RouteSummary.
-4) Do NOT include any markdown, code fences, labels, or extra text before/after the JSON.
-5) Length target: 80–140 words (informative yet concise).
+CONTENT RULES (Strict)
+1) Evidence-only: use ONLY terms and facts that appear in the MSUs or LEGEND. No outside info, no re-interpretation.
+2) Lexical fidelity: prefer verbatim reuse of salient nouns/phrases from MSUs; do not generalize into vague wording.
+3) Coverage: integrate the 3–6 most central claims/themes reflected across hops; avoid enumerating hops one-by-one.
+4) Transition cue: if subspace changes, mention it minimally (e.g., “Shift from <Subspace A> to <Subspace B> …”).
+5) No meta/fillers: forbid “overall/in summary/generally/the text says/this suggests/it highlights/it indicates”.
+6) One paragraph, not a list; high information density; coherent and neutral.
+
+OUTPUT FORMAT (Very Important)
+- Return a SINGLE JSON object with EXACTLY ONE key: "RouteSummary".
+- The value must be a compact paragraph of 90–120 words (no bullets, no markdown, no code fences, no extra text).
 
 LEGEND (panel index → subspace name):
 ${legendLines || '(none)'}
 
-ORDERED HOPS (do not reorder; for your reference only):
+ORDERED HOPS (do not reorder; source of truth):
 ${hopsBlock || '(none)'}
 
-REQUIRED OUTPUT (single JSON object only):
-{"RouteSummary": "<80–140 words overview that integrates key points and notes any important cross-subspace transitions>"}
+REQUIRED OUTPUT:
+{"RouteSummary": "<50-120 words; dense, evidence-based paragraph that preserves hop logic and notes genuine subspace shifts when present>"}
   `.trim();
 
   // ---------- 请求（改动点：task 用 'literature'；按内容类型分流） ----------

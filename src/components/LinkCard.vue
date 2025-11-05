@@ -205,35 +205,40 @@ const summarizeSelected = async () => {
     const dm = getDomNameMap();
     return dm[idx] || `Subspace ${idx}`;
   };
-
-
-  // 3) 沿 path 顺序生成 hops（保序，不合并）
+  // 3) 仅依据“用户勾选”的 MSU 构建 hops（保持 path 顺序；未选中的节点直接跳过）
   const hops = [];
-  const sel = selectedMsus.value; // Set(uid)
+  const sel = selectedMsus.value; // Set("<panelIdx:q,r>#<MSU_id>")
   const path = Array.isArray(props.link?.path) ? props.link.path : [];
+
+  // 预先提取出被选中的 HSU 键集合，避免在每个节点上无意义遍历
+  const selectedHsuKeys = new Set(
+    Array.from(sel).map(uid => uid.split('#')[0]) // -> "<panelIdx:q,r>"
+  );
+
   path.forEach((pt, i) => {
     const hsuKey = `${pt.panelIdx}:${pt.q},${pt.r}`;
+    if (!selectedHsuKeys.has(hsuKey)) return; // 该节点无任何被选中的 MSU，直接跳过
+
     const node = nodeMap.get(hsuKey);
     if (!node?.msu || !Array.isArray(node.msu)) return;
 
-    // 只收集“被勾选”的 MSU
     const sentences = [];
-    node.msu.forEach(msu => {
+    for (const msu of node.msu) {
       const id = msu?.MSU_id ?? msu?.id;
-      if (id == null) return;
+      if (id == null) continue;
       const uid = `${hsuKey}#${id}`;
-      if (!sel.has(uid)) return;
-      const sent = msu.sentence || msu.text || 'No sentence available';
-      sentences.push(`MSU ${id}: ${sent}`);
-    });
+      if (!sel.has(uid)) continue; // 只要“勾选”的
+      const sent = (msu.sentence || msu.text || '').trim();
+      if (sent) sentences.push(`MSU ${id}: ${sent}`);
+    }
 
-    if (sentences.length > 0) {
+    if (sentences.length) {
       hops.push({
         step: i + 1,
-        hsu: hsuKey,                // "panelIdx:q,r"
+        hsu: hsuKey,                             // "panelIdx:q,r"
         panelIdx: pt.panelIdx,
-        subspace: fallbackName(pt.panelIdx), // 子空间名（尽力）
-        sentences                  // 保持原始顺序
+        subspace: fallbackName(pt.panelIdx),     // 最佳可得的子空间名
+        sentences                                // 仅包含用户选中的句子
       });
     }
   });
