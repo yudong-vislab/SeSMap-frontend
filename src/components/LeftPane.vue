@@ -209,6 +209,17 @@ function isClearCommand(text) {
   )
 }
 
+ // 仅当明确出现“gallery / paper gallery / 图片库 / 图集 / collect”时，才走图片展示通道
+function isGalleryCommand(text){
+  const t = (text || '').toLowerCase()
+  return (
+    /\b(paper\s*gallery|gallery)\b/.test(t) ||   // gallery / paper gallery
+    /图片库|图集/.test(text || '') ||            // 中文触发词
+    /^\s*collect\b/i.test(text || '')            // 你之前用的“collectxxxx”
+  )
+}
+
+
 // 将图片集合映射为 PaperList 的 items
 function toPaperItems(folder, items) {
   // PaperList 未提供具体类型；给出常用字段：id/title/thumbUrl/meta
@@ -252,11 +263,35 @@ async function handleSend(msg) {
     return
   }
 
-  // B) 主题/文件夹命令
-  const folder = resolveFolderFromText(msg)
-  if (folder) { showFolder(folder); return }
-
-  // C) 走后端（保持你的原逻辑）
+  // B) Gallery 命令（必须带有 'gallery' / 'paper gallery' / '图集' / 'collect' 等关键词）
+   if (isGalleryCommand(msg)) {
+     const folder = resolveFolderFromText(msg)
+     if (folder) { showFolder(folder); return }
+     messages.value.push({
+       role:'assistant', type:'error',
+       text:'No matching gallery folder. Try: “gallery air” or “paper gallery combust”.'
+     })
+     return
+   }
+ 
+  // C) 子空间 UI 指令（优先前端直达，不经 LLM）
+   try {
+     if (window.CommandRouter && window.SemanticMapCtrl){
+       const parsed = window.CommandRouter.__parse?.(msg) || null
+       const isUi =
+         parsed && ['show','show-all','hide-all','add','delete','list','count','unknown'].includes(parsed.intent) &&
+         /^\s*(show|add|delete|remove|list|how many|显示|新增|删除|列出|有多少)/i.test(msg)
+       if (isUi) {
+         const ret = window.CommandRouter.routeCommand(window.SemanticMapCtrl, msg)
+         messages.value.push({ role:'assistant', type:'markdown', text: ret?.message || 'Done.' })
+         return
+       }
+     }
+   } catch(e){
+     console.warn('[LeftPane] UI route error:', e)
+   }
+ 
+  // D) 走后端 LLM（保留你的原逻辑）
   try {
     const res = await sendQueryToLLM(msg, selectedLLM.value, 'markdown')
     if (typeof res === 'string') {
