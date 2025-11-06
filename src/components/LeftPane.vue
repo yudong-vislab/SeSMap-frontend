@@ -37,17 +37,19 @@ function handlePdfUpload(e) {
   emit('uploadPdfs', files)
 }
 
-// ====== Paper List（保持你原有样式与交互） ============================
+// ====== Paper Gallery（改为“多分组”渲染） ============================
 const paperListRef = ref(null)
-const selectedPaperIds = ref([])
-const paperQuery = ref('')     // 修复控制台 warn
-const papers = ref([])         // 这里将承载“按文件夹加载的图片”项
+// 旧的 v-model:selected-ids 仅适用于单列表，分组模式下先移除使用
+// const selectedPaperIds = ref([])
+const paperQuery = ref('')      // 仍保留为外层标题（可和最新一次的分组合并）
+// const papers = ref([])       // 单列表已废弃
+const paperGroups = ref([])     // [{ key, title, items }]
+
 function openPdfModal(pdfUrl, name){ console.log('[openPdfModal]', pdfUrl, name) }
-function onSelectPaper(){ console.log('Selected Paper Indexs:', selectedPaperIds.value) }
+function onSelectPaper(){ console.log('Select clicked (group-mode).') }
 function onClearPaper(){
-  paperListRef.value?.clearSelection?.()
-  papers.value = []  // 清空画廊
- paperQuery.value = ''  // ★ 清掉标题
+  paperGroups.value = [] // 分组模式
+  paperQuery.value = ''  // ★ 清掉标题
 }
 
 // ====== Chat（这里是你实际页面的聊天区） ==============================
@@ -229,6 +231,7 @@ function toPaperItems(folder, items) {
      return {
        id: `${folder}::${img.path}`,
        globalIndex: i,
+       // 提醒：PaperList 分组模式内部已按组维护选择，不强制全局唯一
        name: pretty,           // PaperList 优先显示 name
        title: pretty,          // 兜底
        content: img.url,       // ★ PaperList 用它当缩略图
@@ -243,8 +246,14 @@ function toPaperItems(folder, items) {
 // 展示某个 folder：把图片灌进 Paper Gallery
 function showFolder(folder) {
   const imgs = (galleryByFolder.value[folder] || []).slice()
-  paperQuery.value = folderTitle(folder)   // ★ 关键：把标题改成当前 folder
-  papers.value = toPaperItems(folder, imgs)
+  // 外层标题也更新为最近一次加载的分组名（可选）
+  paperQuery.value = folderTitle(folder)
+   // 改为“追加一个分组”，而不是覆盖
+  paperGroups.value.push({
+     key: `${folder}-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+     title: folderTitle(folder),
+     items: toPaperItems(folder, imgs)
+  })
   messages.value.push({
     role:'assistant',
     type:'markdown',
@@ -259,7 +268,7 @@ async function handleSend(msg) {
   // A) 清空命令
   if (isClearCommand(msg)) {
     onClearPaper()
-    messages.value.push({ role:'assistant', type:'markdown', text:'**Cleared Paper Gallery.**' })
+    messages.value.push({ role:'assistant', type:'markdown', text:'Cleared Paper Gallery.' })
     return
   }
 
@@ -365,20 +374,20 @@ async function handleSend(msg) {
         </div>
       </header>
       <div class="lp-card__body scroll-auto-hide">
-        <PaperList
-          v-if="papers.length"
-          :key="paperQuery"
-          ref="paperListRef"
-          v-model:selected-ids="selectedPaperIds"
-          :title="paperQuery"
-          @update:title="val => (paperQuery = val)"
-          :items="papers"
-          :use-demo="false"
-          :dim-opacity="0.15"
-          :tileMin="80"
-          :thumbRatio="0.55"
-          @open-pdf="({pdfUrl, name}) => openPdfModal(pdfUrl, name)"
-        />
+          <PaperList
+           v-if="paperGroups.length"
+           :key="paperQuery  + '::' +  paperGroups.length"
+           ref="paperListRef"
+           :title="paperQuery || 'Paper Query'"
+           @update:title="val => (paperQuery = val)"
+           :groups="paperGroups"
+           :use-demo="false"
+           :dim-opacity="0.15"
+           :tileMin="80"
+           :thumbRatio="0.55"
+           @open-pdf="({pdfUrl, name}) => openPdfModal(pdfUrl, name)"
+         />
+
         <!-- <div v-if="!papers.length" class="empty-hint" style="margin-top:8px;">
           <em>Empty.</em> Try:
           <div class="hint-code">show air</div>
