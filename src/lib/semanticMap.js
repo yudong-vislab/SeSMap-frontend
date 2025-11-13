@@ -14,7 +14,7 @@ var COLOR_PALETTE = (typeof COLOR_PALETTE !== 'undefined' && COLOR_PALETTE) ? CO
   '#EA686C', // 柔和砖红，避免太浅
   '#76C2C7', // 稳定青蓝
   '#A6D785', // 温和浅绿
-  '#F2D16B', // 柔和琥珀色
+  '#F2ECAB', // 柔和琥珀色
   '#89B4E0', // 低饱和度天蓝
   '#93B96F', // 稳重军绿色
   '#A7BCE3', // 中灰蓝，适合论文插图
