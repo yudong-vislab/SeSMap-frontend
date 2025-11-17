@@ -1,6 +1,6 @@
-# KnowledgeSubspace-frontend
+# SeSMap-frontend
 
-A Vue-based hex-map visualization for multi-subspace semantic analysis.
+An LLM-Powered Visual Analytics System for Semantic Subspace Exploration.
 It renders countries and conflict regions on a hex grid, supports interactive selection (click/drag/route/flight), and shows per-cell tooltips listing all MSUs present in that HSU.
 
 Features

@@ -1,6 +1,6 @@
 <template>
   <header class="title-bar">
-    KnowledgeSubspaceVA
+    SeSMapVA
   </header>
 </template>
 
