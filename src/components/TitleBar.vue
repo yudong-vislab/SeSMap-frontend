@@ -1,6 +1,6 @@
 <template>
   <header class="title-bar">
-    SeSMapVA
+  Semantic Subspace Map Visual Analytics System (SeSMapVA)
   </header>
 </template>
 

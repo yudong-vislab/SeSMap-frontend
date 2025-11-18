@@ -1,30 +1,56 @@
 import './commandRouter.js';
 
-export async function fetchSemanticMap() {
-  const res = await fetch('/api/semantic-map');
+// === 当前激活的语义图 case（后端的 case1/case2/case3） ===
+export function getActiveProjectId() {
+  return window.__activeProjectId || null;   // 可能是 "case1" / "case2" / "case3" / null
+}
+
+export function setActiveProjectId(pid) {
+  if (pid === 'case1' || pid === 'case2' || pid === 'case3') {
+    window.__activeProjectId = pid;
+  } else if (!pid) {
+    window.__activeProjectId = null;
+  }
+}
+
+export async function fetchSemanticMap(projectId) {
+  // 如果调用方没传，就用当前激活的 projectId（case1/2/3）
+  const pid = projectId || getActiveProjectId();
+  const qs = pid ? `?project_id=${encodeURIComponent(pid)}` : '';
+  const res = await fetch(`/api/semantic-map${qs}`);
   if (!res.ok) throw new Error('Failed to load semantic map');
   return res.json();
 }
 
 export async function createSubspace(payload) {
+  const pid = (payload && payload.project_id) || getActiveProjectId();
+  const body = { ...(payload || {}) };
+  if (pid) body.project_id = pid;   // ★ 自动带当前 case
+
   const res = await fetch('/api/subspaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {})
+    body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error('Failed to create subspace');
   return res.json();
 }
 
+
 export async function renameSubspace(idx, name) {
+  const pid = getActiveProjectId();
+  const body = { subspaceName: name };
+  if (pid) body.project_id = pid;   // ★ 带上当前 case
+
   const res = await fetch(`/api/subspaces/${idx}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subspaceName: name })
+    body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error('Failed to rename subspace');
   return res.json();
 }
+
 
 export async function renameMapTitle(newTitle){
   // 按你的真实 API 调整 URL / method / body
@@ -61,6 +87,32 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT', opts = {}) {
     // ⭐ 新增：若是“子空间显隐”模式，直接路由并返回一个轻量结果
     if (data?.mode === 'subspace/control') {
       const cmd = data?.payload?.text || data?.payload?.command || '';
+      let projectId = data?.payload?.project_id || null;
+
+      // ========= ① 如果后端没给 project_id，就从用户原始 query 里解析 =========
+      if (!projectId && typeof query === 'string') {
+        // 支持 "case 1" / "Case1" / "case 2" 等写法
+        const m = query.match(/case\s*([123])/i);
+        if (m) {
+          projectId = `case${m[1]}`;
+        }
+      }
+
+      // ========= ② 解析到了 case，就更新全局状态 + 通知 MainView =========
+      if (projectId) {
+        console.log('[sendQueryToLLM] detected projectId from query:', projectId);
+        setActiveProjectId(projectId);
+
+        try {
+          window.dispatchEvent(new CustomEvent('semantic-map:project-changed', {
+            detail: { projectId }
+          }));
+        } catch (e) {
+          console.warn('[sendQueryToLLM] dispatch project-changed failed:', e);
+        }
+      } else {
+        console.log('[sendQueryToLLM] no projectId detected, keep current case.');
+      }
 
       // ⭐ 如果路由器还没在 window 上，先动态导入一遍（副作用执行）
       if (!window.CommandRouter) {
@@ -87,7 +139,8 @@ export async function sendQueryToLLM(query, llm = 'ChatGPT', opts = {}) {
           hasRouter: !!window.CommandRouter
         });
       }
-      return { mode: 'subspace/control', ok: true, command: cmd };
+
+      return { mode: 'subspace/control', ok: true, command: cmd, projectId };
     }
 
     // 其他 JSON：直接返回给上层 interpretLLMResponse 使用
@@ -275,6 +328,22 @@ export async function runSubspaceCommand(naturalText) {
   const data = await res.json();
   if (data?.mode === 'subspace/control') {
     const cmd = data?.payload?.text || data?.payload?.command || '';
+    const projectId = data?.payload?.project_id || null;
+
+    if (projectId) {
+      // 1) 记录当前激活的 case
+      setActiveProjectId(projectId);
+
+      // 2) 通知 MainView 重新拉对应 case 的语义图
+      try {
+        window.dispatchEvent(new CustomEvent('semantic-map:project-changed', {
+          detail: { projectId }
+        }));
+      } catch (e) {
+        console.warn('[runSubspaceCommand] dispatch project-changed failed:', e);
+      }
+    }
+
     if (window.CommandRouter && window.SemanticMapCtrl && cmd) {
       try {
         window.CommandRouter.routeCommand(window.SemanticMapCtrl, cmd);
