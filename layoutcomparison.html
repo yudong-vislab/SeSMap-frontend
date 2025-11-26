@@ -1,0 +1,10 @@
+<div id="layout-demo"></div>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://d3js.org/d3-delaunay.v6.min.js"></script>
+<script src="https://d3js.org/d3-hexbin.v0.2.min.js"></script>
+<script src="./src/lib/layoutComparison.js"></script>
+<script>
+  d3.json('./public/data/data4layout.json').then(raw => {
+    createLayoutComparison('#layout-demo', raw);
+  });
+</script>
