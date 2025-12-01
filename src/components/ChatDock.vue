@@ -6,7 +6,7 @@ const taRef = ref(null), text = ref(''); const MIN_ROWS = 1, MAX_ROWS = 8
 
 // 常用指令提示（可按需替换/追加）
 const hintChips = ref([
-  'show air related papers in paper gallery',
+  'show air related papers in semantic source gallery',
   'show all subspaces in case 1',
   'summarize case 1',
   'show background and results subspaces'
