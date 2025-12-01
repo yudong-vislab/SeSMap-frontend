@@ -37,7 +37,7 @@ function handlePdfUpload(e) {
   emit('uploadPdfs', files)
 }
 
-// ====== Paper Gallery（改为“多分组”渲染） ============================
+// ====== Semantic Source Gallery（改为“多分组”渲染） ============================
 const paperListRef = ref(null)
 // 旧的 v-model:selected-ids 仅适用于单列表，分组模式下先移除使用
 // const selectedPaperIds = ref([])
@@ -73,7 +73,7 @@ watch(systemPrompt, v => emit('updateSystemPrompt', v))
 watch(markdownModel, v => emit('updateMarkdownModel', v))
 
 // ======================================================================
-// ========== Pictures ➜ 注入到 Paper Gallery 的 items ==================
+// ========== Pictures ➜ 注入到 Semantic Source Gallery 的 items ==================
 // ======================================================================
 
 /**
@@ -211,11 +211,11 @@ function isClearCommand(text) {
   )
 }
 
- // 仅当明确出现“gallery / paper gallery / 图片库 / 图集 / collect”时，才走图片展示通道
+ // 仅当明确出现“gallery / Semantic Source gallery / 图片库 / 图集 / collect”时，才走图片展示通道
 function isGalleryCommand(text){
   const t = (text || '').toLowerCase()
   return (
-    /\b(paper\s*gallery|gallery)\b/.test(t) ||   // gallery / paper gallery
+    /\b(semantic\s*source\s*gallery|semantic\s*gallery|gallery)\b/.test(t) ||   // gallery / Semantic Source gallery
     /图片库|图集/.test(text || '') ||            // 中文触发词
     /^\s*collect\b/i.test(text || '')            // 你之前用的“collectxxxx”
   )
@@ -243,7 +243,7 @@ function toPaperItems(folder, items) {
 
 }
 
-// 展示某个 folder：把图片灌进 Paper Gallery
+// 展示某个 folder：把图片灌进 Semantic Source Gallery
 function showFolder(folder) {
   const imgs = (galleryByFolder.value[folder] || []).slice()
   // 外层标题也更新为最近一次加载的分组名（可选）
@@ -257,28 +257,28 @@ function showFolder(folder) {
   messages.value.push({
     role:'assistant',
     type:'markdown',
-    text:`Showing \`${folder}\` — ${imgs.length} paper(s) in Paper Gallery.`
+    text:`Showing \`${folder}\` — ${imgs.length} paper(s) in Semantic Source Gallery.`
   })
 }
 
-// ====== 发送消息：本地解析优先（命中 -> 更新 Paper Gallery），否则后端 ======
+// ====== 发送消息：本地解析优先（命中 -> 更新 Semantic Source  Gallery），否则后端 ======
 async function handleSend(msg) {
   messages.value.push({ role: 'user', type:'text', text: msg })
 
   // A) 清空命令
   if (isClearCommand(msg)) {
     onClearPaper()
-    messages.value.push({ role:'assistant', type:'markdown', text:'Cleared Paper Gallery.' })
+    messages.value.push({ role:'assistant', type:'markdown', text:'Cleared Semantic Source Gallery.' })
     return
   }
 
-  // B) Gallery 命令（必须带有 'gallery' / 'paper gallery' / '图集' / 'collect' 等关键词）
+  // B) Gallery 命令（必须带有 'gallery' / 'Semantic Source gallery' / '图集' / 'collect' 等关键词）
    if (isGalleryCommand(msg)) {
      const folder = resolveFolderFromText(msg)
      if (folder) { showFolder(folder); return }
      messages.value.push({
        role:'assistant', type:'error',
-       text:'No matching gallery folder. Try: “gallery air” or “paper gallery combust”.'
+       text:'No matching gallery folder. Try: “gallery air” or “gallery combust”.'
      })
      return
    }
@@ -368,10 +368,10 @@ async function handleSend(msg) {
       </div>
     </section>
 
-    <!-- 2) Paper Gallery（用图片列表直接填充） -->
+    <!-- 2) Semantic Source Gallery（用图片列表直接填充） -->
     <section class="lp-card">
       <header class="card__title">
-        Paper Gallery
+        Semantic Source Gallery
         <div class="mv-actions">
           <button class="select-btn" id="SelectBtn" @click="onSelectPaper">Select</button>
           <button class="clear-btn" id="ClearBtn" @click="onClearPaper">Clear</button>
