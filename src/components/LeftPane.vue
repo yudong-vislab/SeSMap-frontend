@@ -339,7 +339,7 @@ async function handleSend(msg) {
       <header class="card__title">Control Panel</header>
       <div class="lp-card__body cp-stack">
         <div class="cp-block">
-          <div class="cp-label-top">System Prompt</div>
+          <div class="cp-label-top">Global System Prompt</div>
           <textarea class="cp-input cp-textarea" v-model="systemPrompt" />
           <div class="cp-hint">Keep concise.</div>
         </div>
@@ -357,13 +357,13 @@ async function handleSend(msg) {
         <div class="cp-divider"></div>
 
         <div class="cp-block">
-          <div class="cp-label-top">Hex Radius</div>
+          <div class="cp-label-top">Hex Aggregation Range</div>
           <div class="cp-slider">
             <input type="range" :min="hexMin" :max="hexMax" :step="hexStep" v-model="hexRadius" />
             <input class="cp-number" type="number" :min="hexMin" :max="hexMax" :step="hexStep" v-model.number="hexRadius" />
             <span class="cp-unit">px</span>
           </div>
-          <div class="cp-hint">Controls HSU aggregation radius.</div>
+          <!-- <div class="cp-hint">Controls HSU aggregation radius.</div> -->
         </div>
       </div>
     </section>
