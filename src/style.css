@@ -62,7 +62,7 @@ body,
 /* 按钮——保持始终居中，无需调行高 */
 .add-btn,
 .filter-btn,
-.save-btn,
+/* .save-btn, */
 .tool-btn,
 .select-btn,
 .clear-btn {
@@ -84,12 +84,37 @@ body,
 
 .add-btn:hover,
 .filter-btn:hover,
-.save-btn:hover,
+/* .save-btn:hover, */
 .tool-btn:hover,
 .select-btn:hover,
 .clear-btn:hover {
   background: #f7f7f7;
 }
+
+/* ========= 让 save-btn 长相和大小与 mode-btn 一样 ========= */
+.save-btn {
+  /* 大小、边框、背景等完全对齐 mode-btn */
+  background: #f3f5f7;
+  color: #334;
+  border: 1px solid #e3e7ee;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1;
+  height: auto;     /* 覆盖之前的20px */
+  width: auto;      /* 覆盖之前的20px */
+  box-shadow: none; /* 去掉原来的小阴影 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* ========= save-btn 的 hover 行为仍保持原来的「略变灰」效果 ========= */
+.save-btn:hover {
+  background: #f7f7f7;   /* 原 hover 样式，不改变 */
+}
+
 
 .send-btn {
   align-self: stretch;

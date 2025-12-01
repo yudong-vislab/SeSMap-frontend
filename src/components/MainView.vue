@@ -168,7 +168,7 @@ function onSave() {
       </div>
 
       <div class="mv-actions">
-        <button class="add-btn" @click="onAddSubspace" title="Add subspace">＋</button>
+        <!-- <button class="add-btn" @click="onAddSubspace" title="Add subspace">＋</button> -->
         <!-- <button class="filter-btn" title="Filter">Filter</button> -->
         <button class="save-btn" title="Save" @click="onSave">Save</button>
       </div>
